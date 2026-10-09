@@ -1,0 +1,12 @@
+# Local job runtime. The concept treats this as machine state, not part of a shared job.
+state/
+
+# Python
+__pycache__/
+.venv/
+*.pyc
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
