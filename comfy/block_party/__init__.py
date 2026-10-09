@@ -113,7 +113,14 @@ async def export_job(request):
         workflow = payload.get("workflow")
         if not isinstance(workflow, dict):
             raise StepError("bad_input", "workflow is missing")
-        manifest = build_manifest(workflow, _resolve_model, _resolve_pack, sha256_file, name=name)
+        manifest = build_manifest(
+            workflow,
+            _resolve_model,
+            _resolve_pack,
+            sha256_file,
+            name=name,
+            parameters=payload.get("parameters", []),
+        )
         job = write_job(_jobs_root(), name, workflow, manifest)
         prepared = False
         link = load_link()
@@ -129,6 +136,7 @@ async def export_job(request):
                 "inputs": manifest["inputs"],
                 "outputs": manifest["outputs"],
                 "models": [model["filename"] for model in manifest["models"]],
+                "parameters": [item["name"] for item in manifest["parameters"]],
             }
         )
     except StepError as error:

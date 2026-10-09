@@ -2,6 +2,7 @@
 
 link finds the ComfyUI that is already installed.
 prepare checks the manifest against that install.
+parameters lists or changes the values a job exposes.
 run sends one dropped file through the workflow and copies the result back.
 """
 
@@ -21,6 +22,12 @@ from one_job.host import (
     save_link,
 )
 from one_job.job import load_manifest, prepare_job, repair_actions, run_pending, watch
+from one_job.parameters import (
+    clear_parameter,
+    format_parameter_lines,
+    read_overrides,
+    set_parameter,
+)
 
 
 def _print_link(link) -> None:
@@ -78,6 +85,31 @@ def cmd_link(path: str | None) -> None:
     print("saved")
 
 
+def cmd_parameters(job_dir: Path, rest: list[str]) -> None:
+    manifest = load_manifest(job_dir)
+    action = rest[0] if rest else ""
+    if not action:
+        lines = format_parameter_lines(manifest, read_overrides(job_dir))
+        if not lines:
+            print("no parameters")
+            return
+        for line in lines:
+            print(line)
+        return
+    if action == "set":
+        if len(rest) < 3:
+            raise StepError("bad_input", "parameters set needs a name and a value")
+        set_parameter(job_dir, manifest, rest[1], " ".join(rest[2:]))
+    elif action == "clear":
+        if len(rest) != 2:
+            raise StepError("bad_input", "parameters clear needs a name")
+        clear_parameter(job_dir, manifest, rest[1])
+    else:
+        raise StepError("bad_input", "parameters accepts set, clear, or no action")
+    for line in format_parameter_lines(manifest, read_overrides(job_dir)):
+        print(line)
+
+
 def _report(error: StepError, manifest: dict | None) -> None:
     print(f"{error.code}: {error.message}")
     print("repair: " + ", ".join(repair_actions(manifest, error.code)))
@@ -97,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("job")
     run.add_argument("--once", action="store_true", help="process the files already in input/ and exit")
 
+    parameters = sub.add_parser("parameters", help="list or change the values this job exposes")
+    parameters.add_argument("job")
+    parameters.add_argument("rest", nargs=argparse.REMAINDER)
+
     args = parser.parse_args(argv)
     manifest = None
     job = getattr(args, "job", None)
@@ -108,6 +144,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "link":
             cmd_link(args.path)
+            return 0
+        if args.command == "parameters":
+            cmd_parameters(Path(args.job), list(args.rest or []))
             return 0
         host = load_link()
         if host is None:

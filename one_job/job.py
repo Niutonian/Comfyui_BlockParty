@@ -24,6 +24,15 @@ from one_job.host import (
     link_from_running_server,
     server_is_comfy,
 )
+from one_job.parameters import (
+    apply_parameters,
+    format_parameter_lines,
+    format_resolved,
+    read_overrides,
+    resolve_parameters,
+    validate_overrides,
+    verify_parameter_contract,
+)
 from one_job.slots import collect_sets, normalize_manifest
 
 # Per-file codes skip that file and leave the rest of the queue alone.
@@ -91,6 +100,7 @@ def check_contract(workflow: dict, manifest: dict) -> None:
         filename = model.get("filename")
         if not filename or filename not in encoded:
             raise StepError("bad_input", f"workflow does not reference {filename}")
+    verify_parameter_contract(workflow, manifest)
 
 
 def apply_inputs(workflow: dict, manifest: dict, uploaded_by_slot: dict[str, str], set_stem: str) -> dict:
@@ -219,7 +229,10 @@ def prepare_job(job_dir: Path, link) -> dict:
     path = workflow_file(job_dir, manifest)
     workflow = load_workflow(path)
     check_contract(workflow, manifest)
+    parameter_lines = format_parameter_lines(manifest, read_overrides(job_dir))
     models = verify_models(Path(link.comfy_root), manifest)
+    for line in parameter_lines:
+        print(line)
     record = {
         "comfy_root": str(Path(link.comfy_root).resolve()),
         "url": link.url,
@@ -327,9 +340,13 @@ def process_set(job_dir: Path, link, manifest: dict, workflow: dict, item: dict)
             files[name] = claim(job_dir, path, keep_name=multi)
     primary = files[primary_slot]
     write_status(job_dir, primary.name, {"status": "running", "stem": stem})
+    shown = ""
     try:
+        resolved = resolve_parameters(manifest, read_overrides(job_dir))
+        shown = format_resolved(resolved)
         uploaded = {name: upload_image(link.url, path) for name, path in files.items()}
         prompt = apply_inputs(workflow, manifest, uploaded, stem)
+        prompt = apply_parameters(prompt, manifest, resolved)
         prompt_id = queue_prompt(link.url, prompt)
         entry = wait_for_prompt(link.url, prompt_id)
         written: list[str] = []
@@ -345,8 +362,11 @@ def process_set(job_dir: Path, link, manifest: dict, workflow: dict, item: dict)
                 destination.write_bytes(payload)
                 written.append(destination.name)
         write_status(job_dir, primary.name, {"status": "done", "stem": stem, "files": written})
-        return f"{label}  done  output/{written[0]}"
+        detail = f"  {shown}" if shown else ""
+        return f"{label}{detail}  done  output/{written[0]}"
     except StepError as error:
+        if shown:
+            print(shown)
         state = "skipped" if error.code in PER_FILE_CODES else "running"
         write_status(
             job_dir,
@@ -364,6 +384,7 @@ def run_pending(job_dir: Path, link, quiet_if_empty: bool = False) -> int:
     ensure_server(link)
     manifest = load_manifest(job_dir)
     workflow = load_workflow(workflow_file(job_dir, manifest))
+    validate_overrides(manifest, read_overrides(job_dir))
     sets, missing = collect_sets(job_dir, manifest, lambda name: read_status(job_dir, name))
     key = str(job_dir.resolve())
     if not sets:

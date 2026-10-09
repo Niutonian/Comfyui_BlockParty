@@ -136,11 +136,15 @@ If the saved folder is gone, or the running server belongs to a different instal
 
 ## v1
 
-v1 runs on a ComfyUI the user already has. There is no local operator, no portable installer, and no text input. The repair menu is a static table in the manifest. Installing a node, downloading a model, or switching variant asks once and then stops. Skipping a file can happen on its own.
+v1 runs on a ComfyUI the user already has. There is no local operator and no portable installer. The repair menu is a static table in the manifest. Installing a node, downloading a model, or switching variant asks once and then stops. Skipping a file can happen on its own.
 
 The manifest names exact sources. A node pack is a folder name, a git URL, and a commit. A model is a filename, a folder type, a URL, and a SHA-256. Each media slot names the node id, the class type, the input key, the allowed extensions, and a drop name. A variant is a second complete workflow file. A job with one workflow records that choice and does not probe.
 
 Drop names follow the graph. Image loaders become `image_0`, `image_1`, in node-id order. Video loaders become `video_0`, `video_1`. A job with one slot still accepts any filename. A job with several slots runs when every named file is in `input/` together. The Block Party menu command Export job writes that folder from the open graph, including the hashes of models already on disk. A missing model or a missing Save node stops the export. A custom node pack is recorded and must already be installed at that commit. The button does not install it.
+
+The export confirm lists the primitive values on the graph: prompt, size, seed, steps, and similar widgets. The author checks the ones a run may change. Unchecked widgets stay baked into the workflow. Models, node wiring, and image or video slots stay fixed. Defaults live in the manifest. Edits live in `state/parameters.json`, so a shared folder keeps the author's defaults and a re-export leaves local edits in place. The queue writes a value only when the node id and the class type still match. Changing a parameter does not require prepare. Changing the graph still pauses the drop folder until prepare runs again.
+
+Size stays inside the min, max, and step chosen at export. The ceiling starts at the value in the graph. A value outside that range, or off the step, is rejected. Seed is fixed, or random for each file. Random is the default. It is rolled when the file is queued and is not written into `state/parameters.json`. The runner lists and edits values with `python -m one_job parameters`.
 
 A dropped file is moved aside before it is queued, so a crash cannot run it twice. If the workflow or the manifest changes after prepare, the watcher pauses until prepare runs again (`stale_contract`). New node packs need a ComfyUI restart before the queue starts. If the launcher did not start that process, it asks first. When the launcher starts ComfyUI, the server has to be on localhost.
 

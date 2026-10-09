@@ -16,10 +16,21 @@ from one_job.host import (
 from one_job.export_job import build_manifest, hint_for, write_job
 from one_job.job import (
     apply_input,
+    check_contract,
     contract_is_stale,
     output_exists,
     verify_models,
     verify_nodes,
+)
+from one_job.parameters import (
+    accept_parameters,
+    apply_parameters,
+    bounds_for,
+    format_resolved,
+    parameter_candidates,
+    parse_stored,
+    read_overrides,
+    resolve_parameters,
 )
 from one_job.slots import collect_sets
 
@@ -308,6 +319,293 @@ class ExportTests(unittest.TestCase):
             self.assertTrue((job / "output").is_dir())
             stored = json.loads((job / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(stored["inputs"][0]["name"], "image_0")
+            self.assertEqual(stored["parameters"], [])
+            (job / "state").mkdir()
+            (job / "state" / "parameters.json").write_text('{"prompt": "local"}\n', encoding="utf-8")
+            write_job(Path(tmp), "Portrait", workflow, manifest)
+            self.assertEqual(
+                (job / "state" / "parameters.json").read_text(encoding="utf-8"),
+                '{"prompt": "local"}\n',
+            )
+
+
+def _graph() -> dict:
+    return {
+        "2": {"class_type": "LoadImage", "inputs": {"image": "in.png"}},
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": 5,
+                "steps": 20,
+                "cfg": 7.5,
+                "sampler_name": "euler",
+                "model": ["1", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["5", 0],
+            },
+        },
+        "4": {"class_type": "VAELoader", "inputs": {"vae_name": "demo.safetensors"}},
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
+        },
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "a cat", "clip": ["8", 0]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "blurry", "clip": ["8", 0]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["3", 0], "filename_prefix": "out"}},
+    }
+
+
+def _parameter_manifest() -> dict:
+    return {
+        "workflows": [{"name": "default", "file": "workflow.api.json"}],
+        "models": [],
+        "inputs": [
+            {
+                "name": "image_0",
+                "node_id": "2",
+                "class_type": "LoadImage",
+                "key": "image",
+                "extensions": [".png"],
+            }
+        ],
+        "outputs": [{"name": "image_0", "node_id": "9", "class_type": "SaveImage"}],
+        "parameters": [
+            {
+                "name": "prompt",
+                "node_id": "6",
+                "class_type": "CLIPTextEncode",
+                "key": "text",
+                "type": "string",
+                "default": "a cat",
+            },
+            {
+                "name": "width",
+                "node_id": "5",
+                "class_type": "EmptyLatentImage",
+                "key": "width",
+                "type": "integer",
+                "default": 1024,
+                "min": 64,
+                "max": 1024,
+                "step": 64,
+            },
+            {
+                "name": "seed",
+                "node_id": "3",
+                "class_type": "KSampler",
+                "key": "seed",
+                "type": "seed",
+                "default": "random",
+            },
+        ],
+    }
+
+
+class _Roll:
+    def __init__(self, value: int):
+        self.value = value
+        self.calls = []
+
+    def randrange(self, start: int, stop: int) -> int:
+        self.calls.append((start, stop))
+        return self.value
+
+
+class ParameterTests(unittest.TestCase):
+    def test_links_and_model_filenames_are_not_parameters(self):
+        names = {row["key"] for row in parameter_candidates(_graph())}
+        self.assertNotIn("model", names)
+        self.assertNotIn("vae_name", names)
+        self.assertNotIn("image", names)
+        self.assertNotIn("filename_prefix", names)
+        self.assertIn("text", names)
+        self.assertIn("width", names)
+        with self.assertRaises(StepError) as linked:
+            accept_parameters(
+                _graph(),
+                [
+                    {
+                        "name": "model",
+                        "node_id": "3",
+                        "class_type": "KSampler",
+                        "key": "model",
+                        "type": "string",
+                        "default": "nope",
+                    }
+                ],
+            )
+        self.assertEqual(linked.exception.code, "bad_input")
+        with self.assertRaises(StepError) as model:
+            accept_parameters(
+                _graph(),
+                [
+                    {
+                        "name": "vae",
+                        "node_id": "4",
+                        "class_type": "VAELoader",
+                        "key": "vae_name",
+                        "type": "string",
+                        "default": "demo.safetensors",
+                    }
+                ],
+            )
+        self.assertEqual(model.exception.code, "bad_input")
+        self.assertIn("not a value", model.exception.message)
+
+    def test_repeated_text_keys_become_text_and_text_2(self):
+        rows = parameter_candidates(_graph())
+        self.assertEqual([row["name"] for row in rows if row["key"] == "text"], ["text", "text_2"])
+
+    def test_prompt_and_width_are_accepted(self):
+        rows = parameter_candidates(_graph())
+        chosen = [row for row in rows if row["name"] in {"text", "width"}]
+        accepted = accept_parameters(_graph(), chosen)
+        by_name = {row["name"]: row for row in accepted}
+        self.assertEqual(by_name["text"]["type"], "string")
+        self.assertEqual(by_name["text"]["default"], "a cat")
+        self.assertEqual(by_name["width"]["min"], 64)
+        self.assertEqual(by_name["width"]["max"], 1024)
+        self.assertEqual(by_name["width"]["step"], 64)
+        self.assertEqual(bounds_for("width", "integer", 1000), (64, 1000, 8))
+        self.assertEqual(bounds_for("width", "integer", 1001), (64, 1001, 1))
+        self.assertEqual(bounds_for("steps", "integer", 20), (20, 20, 1))
+        manifest = build_manifest(
+            _graph(),
+            lambda filename: ("vae", "unused") if filename == "demo.safetensors" else None,
+            lambda _kind: None,
+            hash_file=lambda _path: "abc",
+            parameters=chosen,
+        )
+        self.assertEqual(
+            [item["name"] for item in manifest["parameters"]],
+            ["width", "text"],
+        )
+
+    def test_width_outside_the_range_or_step_is_rejected(self):
+        spec = _parameter_manifest()["parameters"][1]
+        with self.assertRaises(StepError) as too_big:
+            parse_stored(spec, 4096)
+        self.assertEqual(too_big.exception.code, "bad_input")
+        self.assertIn("64", too_big.exception.message)
+        self.assertIn("1024", too_big.exception.message)
+        self.assertIn("64", too_big.exception.message)
+        with self.assertRaises(StepError) as misaligned:
+            parse_stored(spec, 1000)
+        self.assertEqual(misaligned.exception.code, "bad_input")
+        self.assertIn("steps of 64", misaligned.exception.message)
+
+    def test_random_seed_is_rolled_per_file_and_not_stored(self):
+        manifest = _parameter_manifest()
+        roller = _Roll(7)
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp)
+            (job / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            resolved = resolve_parameters(manifest, {}, roller)
+            self.assertEqual(resolved["seed"], 7)
+            self.assertEqual(roller.calls, [(0, 2**32)])
+            self.assertFalse((job / "state" / "parameters.json").is_file())
+            self.assertIn('prompt="a cat"', format_resolved(resolved))
+            self.assertIn("seed=7", format_resolved(resolved))
+            stored = {"seed": "random"}
+            (job / "state").mkdir()
+            (job / "state" / "parameters.json").write_text(json.dumps(stored), encoding="utf-8")
+            again = resolve_parameters(manifest, read_overrides(job), _Roll(9))
+            self.assertEqual(again["seed"], 9)
+            self.assertEqual(json.loads((job / "state" / "parameters.json").read_text(encoding="utf-8")), stored)
+
+    def test_class_mismatch_is_stale_at_queue(self):
+        manifest = _parameter_manifest()
+        check_contract(_graph(), manifest)
+        changed = _graph()
+        changed["6"]["class_type"] = "KSampler"
+        with self.assertRaises(StepError) as caught:
+            apply_parameters(changed, manifest, {"prompt": "a dog", "width": 1024, "seed": 7})
+        self.assertEqual(caught.exception.code, "stale_contract")
+        self.assertIn("prompt", caught.exception.message)
+        with self.assertRaises(StepError) as prepared:
+            check_contract(changed, manifest)
+        self.assertEqual(prepared.exception.code, "bad_input")
+        original = _graph()
+        prompt = apply_parameters(original, manifest, {"prompt": "a dog", "width": 768, "seed": 7})
+        self.assertEqual(prompt["6"]["inputs"]["text"], "a dog")
+        self.assertEqual(prompt["5"]["inputs"]["width"], 768)
+        self.assertEqual(original["6"]["inputs"]["text"], "a cat")
+
+    def test_override_beats_the_default(self):
+        manifest = _parameter_manifest()
+        resolved = resolve_parameters(manifest, {"prompt": "a dog"}, _Roll(3))
+        self.assertEqual(resolved["prompt"], "a dog")
+        self.assertEqual(resolved["width"], 1024)
+        self.assertEqual(resolved["seed"], 3)
+
+    def test_unknown_override_is_rejected(self):
+        with self.assertRaises(StepError) as caught:
+            resolve_parameters(_parameter_manifest(), {"caption": "x"}, _Roll(1))
+        self.assertEqual(caught.exception.code, "bad_input")
+        self.assertIn("caption", caught.exception.message)
+
+    def test_boolean_accepts_the_cli_words(self):
+        spec = {"name": "flag", "type": "boolean", "default": False}
+        self.assertTrue(parse_stored(spec, "yes"))
+        self.assertTrue(parse_stored(spec, "true"))
+        self.assertTrue(parse_stored(spec, "1"))
+        self.assertFalse(parse_stored(spec, "no"))
+        self.assertFalse(parse_stored(spec, "false"))
+        self.assertFalse(parse_stored(spec, "0"))
+        with self.assertRaises(StepError) as caught:
+            parse_stored(spec, "maybe")
+        self.assertEqual(caught.exception.code, "bad_input")
+
+    def test_parameter_file_does_not_stale_the_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp)
+            workflow = job / "workflow.api.json"
+            manifest_path = job / "manifest.json"
+            workflow.write_text("{}\n", encoding="utf-8")
+            manifest_path.write_text("{}\n", encoding="utf-8")
+            from one_job.job import sha256_file
+
+            record = {
+                "workflow": "workflow.api.json",
+                "workflow_sha256": sha256_file(workflow),
+                "manifest_sha256": sha256_file(manifest_path),
+            }
+            (job / "state").mkdir()
+            (job / "state" / "parameters.json").write_text('{"prompt": "a dog"}\n', encoding="utf-8")
+            self.assertIsNone(contract_is_stale(job, record))
+
+    def test_cli_set_stores_text_and_rejects_a_wide_size(self):
+        from io import StringIO
+        from contextlib import redirect_stdout
+
+        from one_job.__main__ import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp)
+            (job / "manifest.json").write_text(json.dumps(_parameter_manifest()), encoding="utf-8")
+            buffer = StringIO()
+            with redirect_stdout(buffer):
+                code = main(["parameters", str(job), "set", "prompt", "a", "dog"])
+            self.assertEqual(code, 0)
+            stored = json.loads((job / "state" / "parameters.json").read_text(encoding="utf-8"))
+            self.assertEqual(stored, {"prompt": "a dog"})
+            self.assertIn("prompt  a dog  (set)", buffer.getvalue())
+            self.assertIn("seed  random  (default)", buffer.getvalue())
+            rejected = StringIO()
+            with redirect_stdout(rejected):
+                code = main(["parameters", str(job), "set", "width", "4096"])
+            self.assertEqual(code, 1)
+            self.assertIn("between 64 and 1024", rejected.getvalue())
+            self.assertIn("steps of 64", rejected.getvalue())
+            self.assertEqual(
+                json.loads((job / "state" / "parameters.json").read_text(encoding="utf-8")),
+                {"prompt": "a dog"},
+            )
+            with redirect_stdout(StringIO()):
+                code = main(["parameters", str(job), "clear", "prompt"])
+            self.assertEqual(code, 0)
+            self.assertFalse((job / "state" / "parameters.json").is_file())
 
 
 if __name__ == "__main__":

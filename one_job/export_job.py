@@ -8,6 +8,7 @@ from pathlib import Path
 
 from one_job.errors import StepError
 from one_job.job import sha256_file
+from one_job.parameters import accept_parameters
 from one_job.slots import MODEL_EXTENSIONS, assign_slots
 
 REPAIR = {
@@ -58,6 +59,7 @@ def build_manifest(
     resolve_pack,
     hash_file=sha256_file,
     name: str = "job",
+    parameters=None,
 ) -> dict:
     if not isinstance(workflow, dict) or not workflow:
         raise StepError("bad_input", "the graph has no nodes")
@@ -66,6 +68,7 @@ def build_manifest(
         raise StepError("bad_input", "the graph has no LoadImage or LoadVideo")
     if not outputs:
         raise StepError("bad_input", "the graph has no SaveImage or SaveVideo")
+    accepted = accept_parameters(workflow, parameters)
     models = []
     for filename in model_strings(workflow):
         resolved = resolve_model(filename)
@@ -111,6 +114,7 @@ def build_manifest(
             "node_id": first_out["node_id"],
             "class_type": first_out["class_type"],
         },
+        "parameters": accepted,
         "repair": REPAIR,
     }
 

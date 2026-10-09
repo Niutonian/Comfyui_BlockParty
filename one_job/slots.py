@@ -122,6 +122,10 @@ def normalize_manifest(data: dict) -> dict:
     if "output" not in data:
         first = data["outputs"][0]
         data["output"] = {"node_id": first["node_id"], "class_type": first["class_type"]}
+    if "parameters" not in data:
+        data["parameters"] = []
+    elif not isinstance(data["parameters"], list):
+        raise StepError("bad_input", "parameters must be a list")
     return data
 
 
