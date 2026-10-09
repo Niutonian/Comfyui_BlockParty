@@ -1,6 +1,12 @@
 # Local job runtime. The concept treats this as machine state, not part of a shared job.
 state/
 
+# Dropped files and results stay on the machine.
+jobs/*/input/*
+!jobs/*/input/.gitkeep
+jobs/*/output/*
+!jobs/*/output/.gitkeep
+
 # Python
 __pycache__/
 .venv/

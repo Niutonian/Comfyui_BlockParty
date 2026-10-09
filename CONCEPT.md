@@ -2,7 +2,7 @@
 
 Source: `one-job-concept.pdf` (concept, 3 pages). Working title.
 
-Decisions below supersede the PDF where they differ. The current host rule is in [Host](#host).
+Decisions below supersede the PDF where they differ. The host rule is in [Host](#host). The build cut is in [v1](#v1).
 
 A single package and a single launcher. Drop files in a folder. The job installs what it needs, runs every file, and repairs only from a fixed menu.
 
@@ -48,7 +48,7 @@ One program. First open of a job runs preparation. Later opens only watch the fo
 
 ### Prepare, in order
 
-Read the manifest. Resolve the host link, as defined under [Host](#host). Install each pinned node pack at the pinned commit, using the linked Python and the linked `custom_nodes` directory. For each model, search ComfyUI's real model folders, including paths from `extra_model_paths`. If the file exists and the hash matches, skip it. If the name matches and the hash does not, stop. If it is missing, download to the correct folder, write to a partial file, verify the hash, then rename. Gated downloads need a token the user already stored. The package never ships someone else's key. Probe the GPU once, pick a shipped variant, and write that choice into `state/`.
+Read the manifest. Resolve the host link, as defined under [Host](#host). Install each pinned node pack at the pinned commit, using the linked Python and the linked `custom_nodes` directory. For each model, search ComfyUI's real model folders, including paths from `extra_model_paths`. If the file exists and the hash matches, skip it. If the name matches and the hash does not, stop. If it is missing, download to the correct folder, write to a partial file, verify the hash, then rename. Gated downloads need a token the user already stored. The package never ships someone else's key. When the manifest ships more than one workflow, probe the GPU once, pick a shipped variant, and write that choice into `state/`. One workflow is the variant, and the probe does not run. v1 asks before any install, download, or variant switch. See [v1](#v1).
 
 ### Run
 
@@ -60,11 +60,17 @@ The user can still open the graph. That is an editor action, separate from the d
 
 Most failures are missing files, hash mismatches, node version conflicts, a full disk, a busy port, an authentication wall, a bad input, or an out-of-memory run. Those are not language problems. They are prevented by the contract, then reported as codes.
 
-Every step returns a code: `comfy_not_found`, `missing_node`, `node_version_conflict`, `missing_model`, `hash_mismatch`, `auth_required`, `disk_full`, `port_busy`, `oom`, `bad_input`, `output_exists`. The launcher branches on the code. A log line is a fallback for what the step could not classify, not the control path.
+Every step returns a code: `comfy_not_found`, `host_mismatch`, `missing_node`, `node_version_conflict`, `missing_model`, `hash_mismatch`, `auth_required`, `disk_full`, `port_busy`, `oom`, `bad_input`, `stale_contract`, `unclassified`. The launcher branches on the code. A log line is a fallback for what the step could not classify, not the control path.
+
+An existing output is a skip. The tray shows it, and it is not a repair code. The source is still marked so it is not run twice.
+
+ComfyUI reports a running graph as text. A fixed pattern list maps that text onto codes. Out-of-memory text becomes `oom`. Any other execution message becomes `unclassified`. That list is rules.
 
 Deterministic checks never go through a model. Hash, path, "output already exists," and "file type not allowed" are rules. The repair menu is also a rule: for each code, a list of allowed actions. Typical actions are install this pinned node, download this URL and check this hash, switch to the lower-VRAM variant, skip this file, or ask the user. No action outside that list can run.
 
 ## 7. The local operator
+
+The operator is out of scope for v1. The repair menu is a static table. An unclassified execution message is shown, and the file is skipped. The shape below is the later door for logs the rules cannot classify.
 
 A small on-device model sits behind the rules, and only wakes when a code is missing or a log is messy. Needle 3 is the reference shape: a few tens of megabytes, tool calls with grammar-locked JSON, and a confidence score. The same role can be filled by any model that can only emit a call from a declared list.
 
@@ -126,4 +132,14 @@ A running server is reused. The launcher starts ComfyUI only when the linked fol
 
 Node installs and model downloads use the linked python and the linked model folders. The ComfyUI API receives an uploaded filename, so the manifest names the node id and input key that receive it. Results are copied back into the job's `output/`.
 
-If the saved folder is gone, or the running server belongs to a different install than the one the user confirmed, preparation stops and asks again. It does not search for a replacement on its own.
+If the saved folder is gone, or the running server belongs to a different install than the one the user confirmed, preparation stops and asks again. It does not search for a replacement on its own. A different running install is `host_mismatch`.
+
+## v1
+
+v1 is one hand-written job on a ComfyUI the user already has. There is no local operator, no authoring screen, no portable installer, and no video or text input. The repair menu is a static table in the manifest. Installing a node, downloading a model, or switching variant asks once and then stops. Skipping a file can happen on its own.
+
+The manifest names exact sources. A node is a git URL and a commit. The registry id is a label. A model is a filename, a folder type, a URL, and a SHA-256. One input slot names the node id, the class type, the input key, and the allowed extensions. One output slot names the node whose file comes back. A variant is a second complete workflow file. A job with one workflow records that choice and does not probe.
+
+A dropped file is moved aside before it is queued, so a crash cannot run it twice. If the workflow or the manifest changes after prepare, the watcher pauses until prepare runs again (`stale_contract`). New node packs need a ComfyUI restart before the queue starts. If the launcher did not start that process, it asks first. When the launcher starts ComfyUI, the server has to be on localhost.
+
+The first slice does not install a node and does not download a model. It links the running install, queues one workflow whose model is already on disk, drops one image, and copies one result into the job's `output/`.
