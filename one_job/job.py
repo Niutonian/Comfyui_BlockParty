@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from one_job.host import (
     link_from_running_server,
     server_is_comfy,
 )
+from one_job.slots import collect_sets, normalize_manifest
 
 # Per-file codes skip that file and leave the rest of the queue alone.
 PER_FILE_CODES = {"oom", "unclassified", "bad_input"}
@@ -44,20 +46,12 @@ def load_manifest(job_dir: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         raise StepError("bad_input", f"manifest.json is not valid JSON: {error}") from error
-    for key in ("workflows", "models", "input", "output"):
+    for key in ("workflows", "models"):
         if key not in data:
             raise StepError("bad_input", f"manifest is missing {key}")
-    slot = data["input"]
-    for key in ("node_id", "class_type", "key", "extensions"):
-        if key not in slot:
-            raise StepError("bad_input", f"input slot is missing {key}")
-    output = data["output"]
-    for key in ("node_id", "class_type"):
-        if key not in output:
-            raise StepError("bad_input", f"output slot is missing {key}")
     if not isinstance(data["workflows"], list) or not data["workflows"]:
         raise StepError("bad_input", "manifest needs one workflow")
-    return data
+    return normalize_manifest(data)
 
 
 def workflow_file(job_dir: Path, manifest: dict) -> Path:
@@ -81,16 +75,17 @@ def load_workflow(path: Path) -> dict:
 
 
 def check_contract(workflow: dict, manifest: dict) -> None:
-    slot = manifest["input"]
-    node = workflow.get(str(slot["node_id"]))
-    if not isinstance(node, dict) or node.get("class_type") != slot["class_type"]:
-        raise StepError("bad_input", "input slot does not match the workflow")
-    if slot["key"] not in (node.get("inputs") or {}):
-        raise StepError("bad_input", "input slot key is missing from the workflow")
-    output = manifest["output"]
-    output_node = workflow.get(str(output["node_id"]))
-    if not isinstance(output_node, dict) or output_node.get("class_type") != output["class_type"]:
-        raise StepError("bad_input", "output slot does not match the workflow")
+    manifest = normalize_manifest(manifest)
+    for slot in manifest["inputs"]:
+        node = workflow.get(str(slot["node_id"]))
+        if not isinstance(node, dict) or node.get("class_type") != slot["class_type"]:
+            raise StepError("bad_input", "input slot does not match the workflow")
+        if slot["key"] not in (node.get("inputs") or {}):
+            raise StepError("bad_input", "input slot key is missing from the workflow")
+    for slot in manifest["outputs"]:
+        node = workflow.get(str(slot["node_id"]))
+        if not isinstance(node, dict) or node.get("class_type") != slot["class_type"]:
+            raise StepError("bad_input", "output slot does not match the workflow")
     encoded = json.dumps(workflow)
     for model in manifest["models"]:
         filename = model.get("filename")
@@ -98,18 +93,32 @@ def check_contract(workflow: dict, manifest: dict) -> None:
             raise StepError("bad_input", f"workflow does not reference {filename}")
 
 
-def apply_input(workflow: dict, manifest: dict, filename: str) -> dict:
-    """Return a copy with the uploaded filename written into the declared slot."""
+def apply_inputs(workflow: dict, manifest: dict, uploaded_by_slot: dict[str, str], set_stem: str) -> dict:
+    """Return a copy with each uploaded file written into its named slot."""
+    manifest = normalize_manifest(manifest)
     prompt = copy.deepcopy(workflow)
-    check_contract(prompt, manifest)
-    slot = manifest["input"]
-    prompt[str(slot["node_id"])]["inputs"][slot["key"]] = filename
-    output = manifest["output"]
-    output_node = prompt[str(output["node_id"])]
-    if output["class_type"] == "SaveImage" and "filename_prefix" in output_node.get("inputs", {}):
-        stem = Path(filename).stem
-        output_node["inputs"]["filename_prefix"] = f"one-job/{stem}"
+    for slot in manifest["inputs"]:
+        node = prompt.get(str(slot["node_id"]))
+        if not isinstance(node, dict) or node.get("class_type") != slot["class_type"]:
+            raise StepError("bad_input", "input slot does not match the workflow")
+        if slot["key"] not in (node.get("inputs") or {}):
+            raise StepError("bad_input", "input slot key is missing from the workflow")
+        prompt[str(slot["node_id"])]["inputs"][slot["key"]] = uploaded_by_slot[slot["name"]]
+    for node in prompt.values():
+        if not isinstance(node, dict):
+            continue
+        if node.get("class_type") in {"SaveImage", "SaveVideo", "VHS_VideoCombine"}:
+            inputs = node.setdefault("inputs", {})
+            if "filename_prefix" in inputs:
+                inputs["filename_prefix"] = f"one-job/{set_stem}"
     return prompt
+
+
+def apply_input(workflow: dict, manifest: dict, filename: str) -> dict:
+    """One-slot helper. The uploaded name is written into image_0 or the only slot."""
+    manifest = normalize_manifest(manifest)
+    slot_name = manifest["inputs"][0]["name"]
+    return apply_inputs(workflow, manifest, {slot_name: filename}, Path(filename).stem)
 
 
 def repair_actions(manifest: dict | None, code: str) -> list[str]:
@@ -167,14 +176,46 @@ def prepared_path(job_dir: Path) -> Path:
     return job_dir / "state" / "prepared.json"
 
 
+def _git_head(pack: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(pack), "rev-parse", "HEAD"],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    text = completed.stdout.decode("utf-8", errors="replace").strip()
+    return text or None
+
+
+def verify_nodes(custom_nodes: Path, manifest: dict) -> None:
+    """Accept a pack that is already installed. Do not install one that is missing."""
+    for node in manifest.get("nodes") or []:
+        name = node.get("name")
+        if not name:
+            raise StepError("bad_input", "a node pack is missing its name")
+        pack = custom_nodes / name
+        if not pack.is_dir():
+            raise StepError("missing_node", f"{name} is not in custom_nodes")
+        commit = node.get("commit")
+        if not commit:
+            print(f"{name}  present, not pinned")
+            continue
+        actual = _git_head(pack)
+        if actual != commit:
+            shown = actual[:12] if actual else "missing"
+            raise StepError("node_version_conflict", f"{name} is {shown}, manifest says {commit[:12]}")
+        print(f"{name}  commit ok")
+
+
 def prepare_job(job_dir: Path, link) -> dict:
     ensure_server(link)
     manifest = load_manifest(job_dir)
-    if manifest.get("nodes"):
-        raise StepError(
-            "missing_node",
-            "this slice does not install node packs; confirm stays in front of that repair",
-        )
+    verify_nodes(Path(link.custom_nodes), manifest)
     path = workflow_file(job_dir, manifest)
     workflow = load_workflow(path)
     check_contract(workflow, manifest)
@@ -219,14 +260,6 @@ def require_prepared(job_dir: Path, link) -> dict:
     return record
 
 
-def allowed_extensions(manifest: dict) -> set[str]:
-    extensions = set()
-    for ext in manifest["input"]["extensions"]:
-        text = str(ext).lower()
-        extensions.add(text if text.startswith(".") else f".{text}")
-    return extensions
-
-
 def _status_path(job_dir: Path, name: str) -> Path:
     return job_dir / "state" / "files" / f"{name}.json"
 
@@ -254,34 +287,19 @@ def output_exists(job_dir: Path, stem: str) -> bool:
     return False
 
 
-def claim(job_dir: Path, source: Path) -> Path:
+def claim(job_dir: Path, source: Path, keep_name: bool = False) -> Path:
     """Move the source aside before queue so a crash cannot run it twice."""
     destination_dir = job_dir / "state" / "claimed"
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination = destination_dir / source.name
     if destination.exists():
-        destination = destination_dir / f"{source.stem}-{time.time_ns()}{source.suffix}"
+        parked = destination_dir / f"{source.stem}-{time.time_ns()}{source.suffix}"
+        if keep_name:
+            destination.replace(parked)
+        else:
+            destination = parked
     source.replace(destination)
     return destination
-
-
-def pending_files(job_dir: Path, manifest: dict) -> list[Path]:
-    extensions = allowed_extensions(manifest)
-    found: list[Path] = []
-    input_dir = job_dir / "input"
-    if input_dir.is_dir():
-        for path in sorted(input_dir.iterdir()):
-            if path.is_file() and not path.name.startswith(".") and path.suffix.lower() in extensions:
-                found.append(path)
-    claimed_dir = job_dir / "state" / "claimed"
-    if claimed_dir.is_dir():
-        for path in sorted(claimed_dir.iterdir()):
-            if not path.is_file() or path.suffix.lower() not in extensions:
-                continue
-            status = read_status(job_dir, path.name)
-            if status is None or status.get("status") == "running":
-                found.append(path)
-    return found
 
 
 def _safe_name(name: str) -> None:
@@ -289,50 +307,56 @@ def _safe_name(name: str) -> None:
         raise StepError("bad_input", "filename has characters the upload cannot carry")
 
 
-def process_file(job_dir: Path, link, manifest: dict, workflow: dict, source: Path) -> str:
-    _safe_name(source.name)
-    label = source.name
-    stem = source.stem
+def process_set(job_dir: Path, link, manifest: dict, workflow: dict, item: dict) -> str:
+    manifest = normalize_manifest(manifest)
+    stem = item["stem"]
+    label = item["label"]
+    files = dict(item["files"])
+    for path in files.values():
+        _safe_name(path.name)
+    multi = len(manifest["inputs"]) > 1
+    primary_slot = manifest["inputs"][0]["name"]
     if output_exists(job_dir, stem):
-        if source.parent.name == "input":
-            source = claim(job_dir, source)
-        write_status(job_dir, source.name, {"status": "skipped", "stem": stem})
+        for name, path in list(files.items()):
+            if path.parent.name == "input":
+                files[name] = claim(job_dir, path, keep_name=multi)
+        write_status(job_dir, files[primary_slot].name, {"status": "skipped", "stem": stem})
         return f"{label}  skipped"
-    if source.parent.name == "input":
-        source = claim(job_dir, source)
-        stem = source.stem
-    write_status(job_dir, source.name, {"status": "running", "stem": stem})
+    for name, path in list(files.items()):
+        if path.parent.name == "input":
+            files[name] = claim(job_dir, path, keep_name=multi)
+    primary = files[primary_slot]
+    write_status(job_dir, primary.name, {"status": "running", "stem": stem})
     try:
-        uploaded = upload_image(link.url, source)
-        prompt = apply_input(workflow, manifest, uploaded)
+        uploaded = {name: upload_image(link.url, path) for name, path in files.items()}
+        prompt = apply_inputs(workflow, manifest, uploaded, stem)
         prompt_id = queue_prompt(link.url, prompt)
         entry = wait_for_prompt(link.url, prompt_id)
-        images = result_images(entry, str(manifest["output"]["node_id"]))
         written: list[str] = []
-        for index, image in enumerate(images):
-            payload = download_image(link.url, image)
-            suffix = Path(image["filename"]).suffix or ".png"
-            name = f"{stem}{suffix}" if index == 0 else f"{stem}_{index + 1}{suffix}"
-            destination = job_dir / "output" / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(payload)
-            written.append(destination.name)
+        flat_index = 0
+        for out_slot in manifest["outputs"]:
+            for image in result_images(entry, str(out_slot["node_id"])):
+                payload = download_image(link.url, image)
+                suffix = Path(image["filename"]).suffix or ".png"
+                file_name = f"{stem}{suffix}" if flat_index == 0 else f"{stem}_{flat_index + 1}{suffix}"
+                flat_index += 1
+                destination = job_dir / "output" / file_name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(payload)
+                written.append(destination.name)
+        write_status(job_dir, primary.name, {"status": "done", "stem": stem, "files": written})
+        return f"{label}  done  output/{written[0]}"
+    except StepError as error:
+        state = "skipped" if error.code in PER_FILE_CODES else "running"
         write_status(
             job_dir,
-            source.name,
-            {"status": "done", "stem": stem, "files": written},
+            primary.name,
+            {"status": state, "stem": stem, "code": error.code, "message": error.message},
         )
-        return f"{source.name}  done  output/{written[0]}"
-    except StepError as error:
-        if error.code in PER_FILE_CODES:
-            write_status(
-                job_dir,
-                source.name,
-                {"status": "skipped", "stem": stem, "code": error.code, "message": error.message},
-            )
-        else:
-            write_status(job_dir, source.name, {"status": "running", "stem": stem, "code": error.code})
         raise
+
+
+_last_notice: dict[str, str] = {}
 
 
 def run_pending(job_dir: Path, link, quiet_if_empty: bool = False) -> int:
@@ -340,15 +364,24 @@ def run_pending(job_dir: Path, link, quiet_if_empty: bool = False) -> int:
     ensure_server(link)
     manifest = load_manifest(job_dir)
     workflow = load_workflow(workflow_file(job_dir, manifest))
-    files = pending_files(job_dir, manifest)
-    if not files:
-        if not quiet_if_empty:
-            print("no files")
+    sets, missing = collect_sets(job_dir, manifest, lambda name: read_status(job_dir, name))
+    key = str(job_dir.resolve())
+    if not sets:
+        if missing:
+            notice = "waiting for " + ", ".join(missing)
+            if _last_notice.get(key) != notice or not quiet_if_empty:
+                print(notice)
+            _last_notice[key] = notice
+        else:
+            _last_notice.pop(key, None)
+            if not quiet_if_empty:
+                print("no files")
         return 0
+    _last_notice.pop(key, None)
     failures = 0
-    for source in files:
+    for item in sets:
         try:
-            print(process_file(job_dir, link, manifest, workflow, source))
+            print(process_set(job_dir, link, manifest, workflow, item))
         except StepError as error:
             print(f"{error.code}: {error.message}")
             print("repair: " + ", ".join(repair_actions(manifest, error.code)))

@@ -121,7 +121,7 @@ def result_images(entry: dict, node_id: str) -> list[dict]:
         raise StepError(classify_execution(text), text[:800])
     outputs = entry.get("outputs") or {}
     node = outputs.get(node_id) or {}
-    images = node.get("images") or []
+    images = list(node.get("images") or []) + list(node.get("gifs") or [])
     if not images:
         text = execution_text(entry) or f"output node {node_id} returned no file"
         raise StepError(classify_execution(text), text[:800])

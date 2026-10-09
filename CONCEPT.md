@@ -136,9 +136,11 @@ If the saved folder is gone, or the running server belongs to a different instal
 
 ## v1
 
-v1 is one hand-written job on a ComfyUI the user already has. There is no local operator, no authoring screen, no portable installer, and no video or text input. The repair menu is a static table in the manifest. Installing a node, downloading a model, or switching variant asks once and then stops. Skipping a file can happen on its own.
+v1 runs on a ComfyUI the user already has. There is no local operator, no portable installer, and no text input. The repair menu is a static table in the manifest. Installing a node, downloading a model, or switching variant asks once and then stops. Skipping a file can happen on its own.
 
-The manifest names exact sources. A node is a git URL and a commit. The registry id is a label. A model is a filename, a folder type, a URL, and a SHA-256. One input slot names the node id, the class type, the input key, and the allowed extensions. One output slot names the node whose file comes back. A variant is a second complete workflow file. A job with one workflow records that choice and does not probe.
+The manifest names exact sources. A node pack is a folder name, a git URL, and a commit. A model is a filename, a folder type, a URL, and a SHA-256. Each media slot names the node id, the class type, the input key, the allowed extensions, and a drop name. A variant is a second complete workflow file. A job with one workflow records that choice and does not probe.
+
+Drop names follow the graph. Image loaders become `image_0`, `image_1`, in node-id order. Video loaders become `video_0`, `video_1`. A job with one slot still accepts any filename. A job with several slots runs when every named file is in `input/` together. The Block Party menu command Export job writes that folder from the open graph, including the hashes of models already on disk. A missing model or a missing Save node stops the export. A custom node pack is recorded and must already be installed at that commit. The button does not install it.
 
 A dropped file is moved aside before it is queued, so a crash cannot run it twice. If the workflow or the manifest changes after prepare, the watcher pauses until prepare runs again (`stale_contract`). New node packs need a ComfyUI restart before the queue starts. If the launcher did not start that process, it asks first. When the launcher starts ComfyUI, the server has to be on localhost.
 

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,12 +13,15 @@ from one_job.host import (
     make_link,
     parse_extra_model_yaml,
 )
+from one_job.export_job import build_manifest, hint_for, write_job
 from one_job.job import (
     apply_input,
     contract_is_stale,
     output_exists,
     verify_models,
+    verify_nodes,
 )
+from one_job.slots import collect_sets
 
 
 def _install(root: Path) -> None:
@@ -191,6 +195,119 @@ class ContractTests(unittest.TestCase):
             self.assertIsNone(contract_is_stale(job, record))
             workflow.write_text('{"changed": true}\n', encoding="utf-8")
             self.assertIn("workflow", contract_is_stale(job, record))
+
+
+class ExportTests(unittest.TestCase):
+    def _workflow(self):
+        return {
+            "10": {"class_type": "LoadVideo", "inputs": {"file": "clip.mp4"}},
+            "2": {"class_type": "LoadImage", "inputs": {"image": "first.png"}},
+            "3": {"class_type": "LoadImage", "inputs": {"image": "second.png"}},
+            "4": {"class_type": "VAELoader", "inputs": {"vae_name": "demo.safetensors"}},
+            "9": {
+                "class_type": "SaveImage",
+                "inputs": {"images": ["2", 0], "filename_prefix": "out"},
+            },
+            "11": {"class_type": "SaveVideo", "inputs": {"video": ["10", 0], "filename_prefix": "clip"}},
+        }
+
+    def test_slots_follow_node_order_and_media_kind(self):
+        def resolve(filename):
+            if filename == "demo.safetensors":
+                return "vae", "unused-path"
+
+            return None
+
+        def pack(class_type):
+            if class_type == "LoadVideo":
+                return {"name": "core-should-not", "git_url": None, "commit": None}
+            return None
+
+        manifest = build_manifest(self._workflow(), resolve, pack, hash_file=lambda _path: "abc")
+        self.assertEqual([slot["name"] for slot in manifest["inputs"]], ["image_0", "image_1", "video_0"])
+        self.assertEqual(manifest["inputs"][0]["node_id"], "2")
+        self.assertEqual(manifest["inputs"][2]["node_id"], "10")
+        self.assertEqual(manifest["inputs"][2]["key"], "file")
+        self.assertEqual([slot["name"] for slot in manifest["outputs"]], ["image_0", "video_0"])
+        self.assertEqual(manifest["models"][0]["sha256"], "abc")
+        self.assertEqual(manifest["models"][0]["folder"], "vae")
+        self.assertIn("image_0", hint_for(manifest))
+        self.assertIn("video_0", hint_for(manifest))
+
+    def test_unknown_model_stops_the_export(self):
+        workflow = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+            "2": {"class_type": "VAELoader", "inputs": {"vae_name": "missing.safetensors"}},
+            "3": {"class_type": "SaveImage", "inputs": {"images": ["1", 0], "filename_prefix": "out"}},
+        }
+        with self.assertRaises(StepError) as caught:
+            build_manifest(workflow, lambda _name: None, lambda _kind: None, hash_file=lambda _path: "abc")
+        self.assertEqual(caught.exception.code, "missing_model")
+
+    def test_several_slots_wait_until_every_name_is_present(self):
+        manifest = {
+            "inputs": [
+                {
+                    "name": "image_0",
+                    "node_id": "2",
+                    "class_type": "LoadImage",
+                    "key": "image",
+                    "extensions": [".png"],
+                },
+                {
+                    "name": "image_1",
+                    "node_id": "3",
+                    "class_type": "LoadImage",
+                    "key": "image",
+                    "extensions": [".png"],
+                },
+            ],
+            "outputs": [{"name": "image_0", "node_id": "9", "class_type": "SaveImage"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp)
+            (job / "input").mkdir()
+            (job / "input" / "image_0.png").write_bytes(b"a")
+            sets, missing = collect_sets(job, manifest, lambda _name: None)
+            self.assertEqual(sets, [])
+            self.assertEqual(missing, ["image_1"])
+            (job / "input" / "image_1.png").write_bytes(b"b")
+            (job / "input" / "notes.png").write_bytes(b"c")
+            sets, missing = collect_sets(job, manifest, lambda _name: None)
+            self.assertEqual(missing, [])
+            self.assertEqual(sets[0]["stem"], "image_0")
+            self.assertEqual(set(sets[0]["files"]), {"image_0", "image_1"})
+
+    def test_one_slot_still_accepts_any_filename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp)
+            (job / "input").mkdir()
+            (job / "input" / "photo.png").write_bytes(b"a")
+            sets, missing = collect_sets(job, _manifest(), lambda _name: None)
+            self.assertEqual(missing, [])
+            self.assertEqual(sets[0]["stem"], "photo")
+            self.assertEqual(sets[0]["files"]["image_0"].name, "photo.png")
+
+    def test_missing_node_pack_is_not_installed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(StepError) as caught:
+                verify_nodes(Path(tmp), {"nodes": [{"name": "some-pack", "commit": "abc"}]})
+            self.assertEqual(caught.exception.code, "missing_node")
+
+    def test_write_job_creates_the_folder_shape(self):
+        workflow = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+            "3": {"class_type": "SaveImage", "inputs": {"images": ["1", 0], "filename_prefix": "out"}},
+        }
+        manifest = build_manifest(workflow, lambda _name: None, lambda _kind: None, hash_file=lambda _path: "abc")
+        with tempfile.TemporaryDirectory() as tmp:
+            job = write_job(Path(tmp), "Portrait", workflow, manifest)
+            self.assertTrue((job / "workflow.api.json").is_file())
+            self.assertTrue((job / "manifest.json").is_file())
+            self.assertTrue((job / "input").is_dir())
+            self.assertTrue((job / "output").is_dir())
+            stored = json.loads((job / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(stored["inputs"][0]["name"], "image_0")
 
 
 if __name__ == "__main__":
