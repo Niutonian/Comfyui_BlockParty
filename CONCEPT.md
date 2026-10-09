@@ -2,6 +2,8 @@
 
 Source: `one-job-concept.pdf` (concept, 3 pages). Working title.
 
+Decisions below supersede the PDF where they differ. The current host rule is in [Host](#host).
+
 A single package and a single launcher. Drop files in a folder. The job installs what it needs, runs every file, and repairs only from a fixed menu.
 
 ## 1. What it is
@@ -46,11 +48,11 @@ One program. First open of a job runs preparation. Later opens only watch the fo
 
 ### Prepare, in order
 
-Read the manifest. Find or start ComfyUI. Install each pinned node pack at the pinned commit. For each model, search ComfyUI's real model folders, including paths from `extra_model_paths`. If the file exists and the hash matches, skip it. If the name matches and the hash does not, stop. If it is missing, download to the correct folder, write to a partial file, verify the hash, then rename. Gated downloads need a token the user already stored. The package never ships someone else's key. Probe the GPU once, pick a shipped variant, and write that choice into `state/`.
+Read the manifest. Resolve the host link, as defined under [Host](#host). Install each pinned node pack at the pinned commit, using the linked Python and the linked `custom_nodes` directory. For each model, search ComfyUI's real model folders, including paths from `extra_model_paths`. If the file exists and the hash matches, skip it. If the name matches and the hash does not, stop. If it is missing, download to the correct folder, write to a partial file, verify the hash, then rename. Gated downloads need a token the user already stored. The package never ships someone else's key. Probe the GPU once, pick a shipped variant, and write that choice into `state/`.
 
 ### Run
 
-Watch `input/`. For each new file of an allowed type, queue the API workflow with that file substituted in. Write the result to `output/` under the same stem. Move or mark the source so it is not run twice. If output already exists, skip. One file in memory at a time. A crash leaves finished files intact.
+Watch `input/`. For each new file of an allowed type, upload it into the linked ComfyUI input area and queue the API workflow with that filename substituted at the slot named in the manifest. Copy the result into the job's `output/` under the same stem. Move or mark the source so it is not run twice. If output already exists, skip. One file in memory at a time. A crash leaves finished files intact.
 
 The user can still open the graph. That is an editor action, separate from the drop folder. Saving an edit rewrites the workflow and, if nodes or models changed, the manifest. The drop folder keeps using the last prepared contract until preparation is run again.
 
@@ -58,7 +60,7 @@ The user can still open the graph. That is an editor action, separate from the d
 
 Most failures are missing files, hash mismatches, node version conflicts, a full disk, a busy port, an authentication wall, a bad input, or an out-of-memory run. Those are not language problems. They are prevented by the contract, then reported as codes.
 
-Every step returns a code: `missing_node`, `node_version_conflict`, `missing_model`, `hash_mismatch`, `auth_required`, `disk_full`, `port_busy`, `oom`, `bad_input`, `output_exists`. The launcher branches on the code. A log line is a fallback for what the step could not classify, not the control path.
+Every step returns a code: `comfy_not_found`, `missing_node`, `node_version_conflict`, `missing_model`, `hash_mismatch`, `auth_required`, `disk_full`, `port_busy`, `oom`, `bad_input`, `output_exists`. The launcher branches on the code. A log line is a fallback for what the step could not classify, not the control path.
 
 Deterministic checks never go through a model. Hash, path, "output already exists," and "file type not allowed" are rules. The repair menu is also a rule: for each code, a list of allowed actions. Typical actions are install this pinned node, download this URL and check this hash, switch to the lower-VRAM variant, skip this file, or ask the user. No action outside that list can run.
 
@@ -82,7 +84,7 @@ Past that, the gains get thin. The operator will not design a better img2img gra
 
 ## 9. What the person sees
 
-First launch: a short prepare screen. Missing models with sizes. A token field if a download is gated. One confirm. A progress line per node and per file. Then the drop folder opens.
+First launch: a short prepare screen. If a host is already linked, show that folder. If several installs are found, the user picks one. If none is found, the user adds the path. Missing models with sizes. A token field if a download is gated. One confirm. A progress line per node and per file. Then the drop folder opens.
 
 Daily use: drop files. A tray icon shows queued, running, done, skipped. Failures show the code in plain language and, if the operator proposed a repair, that one action with yes or no.
 
@@ -92,4 +94,36 @@ Authoring, for the person who already lives in ComfyUI: build the graph as usual
 
 A beginner can open a job, confirm the downloads, drop a folder of images, and collect outputs without opening the node graph. A second machine with the same models does not download them again. A hash mismatch stops instead of silently loading the wrong file. An out-of-memory run can switch to a shipped smaller variant or skip, and cannot run an arbitrary command. The canvas still opens for the author. Nothing else is required to call the product finished.
 
-One package. One launcher. Pinned nodes and hashed models. A drop folder. A fixed repair menu. A small local model only for the cases the rules cannot classify.
+One package. One launcher. A linked ComfyUI the user already has. Pinned nodes and hashed models. A drop folder. A fixed repair menu. A small local model only for the cases the rules cannot classify.
+
+## Host
+
+The current user already has ComfyUI. The launcher detects that install, locates its folder, or asks the user to add the path, then links the job to it. A later version may install a portable ComfyUI, set it up, and run the job when no install exists. That installer is out of scope until the linked-install path works. `comfy_not_found` is the code that installer will later handle. Today the only repair is to choose a folder.
+
+The link is machine-wide. It lives in the launcher's own config, and every job reuses it. A job's `state/` records which link it was prepared against. It does not store a second copy of the path as part of the shared package.
+
+Detection stops at the first valid saved link. Otherwise it checks, in order:
+
+1. A ComfyUI server already answering on the local port. The process command line supplies the folder and the interpreter when it can.
+2. Footprints that name a real install: comfy-cli's saved workspace, and the Desktop app's `basePath` in its user config.
+3. A folder the user adds.
+
+Several valid installs produce a choice, not a guess. A missing folder produces `comfy_not_found` and a path field. The launcher does not scan the whole disk.
+
+Either the parent folder or the inner `ComfyUI` folder is acceptable. Easy-Install and the portable package keep `python_embeded` and `Start ComfyUI.bat` beside the folder that contains `main.py`. The Desktop app splits the application directory from the user data directory named by `basePath`. The launcher normalizes all of these to one record:
+
+| Field | Meaning |
+| --- | --- |
+| `comfy_root` | Directory that contains `main.py`. |
+| `python` | The interpreter that owns that install. Portable and Easy-Install use the sibling `python_embeded`. A git clone uses its own venv. |
+| `start` | The install's own start script when one sits beside the folder. Otherwise that python running `main.py`. |
+| `url` | The server already listening, or the one this launcher just started. |
+| `custom_nodes` | `comfy_root/custom_nodes`. Node installs go here, at the pinned commit. |
+| `models` | `comfy_root/models`, plus every `base_path` in `extra_model_paths.yaml` or the Desktop `extra_models_config.yaml`. |
+| `comfy_input` / `comfy_output` | ComfyUI's own folders. The job's `input/` and `output/` stay separate. |
+
+A running server is reused. The launcher starts ComfyUI only when the linked folder is valid and nothing is answering. `port_busy` means the port is taken by something that is not this install.
+
+Node installs and model downloads use the linked python and the linked model folders. The ComfyUI API receives an uploaded filename, so the manifest names the node id and input key that receive it. Results are copied back into the job's `output/`.
+
+If the saved folder is gone, or the running server belongs to a different install than the one the user confirmed, preparation stops and asks again. It does not search for a replacement on its own.
