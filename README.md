@@ -1,6 +1,14 @@
-# Comfyui_BlockParty
+![Block Party: robots celebrating around connected image, video, and sharing nodes](docs/images/block-party-header-v1.png)
 
-A job is a folder. Drop a picture in `input/`. The result comes back in `output/` with the same name. The graph stays in the folder. You change the prompt, the size, and the seed from the command line, or from a page on this computer.
+# Block Party
+
+**Your workflow deserves an invite to the next machine.**
+
+Block Party turns ComfyUI workflows into portable jobs you can share, unpack, and run. Bring the graph, the prompts, and the recipe. When you arrive, Block Party checks the models and custom nodes, shows what is missing, and installs the declared dependencies after you approve the plan. Give your friends a starting point they can actually use.
+
+Start with one image, or throw a whole production party: generate images, turn them into video clips, and assemble the final film through an ordered project chain. Edit prompts in a local browser page, keep your API keys on your own computer, and package the project into a ZIP for its next stop.
+
+A job is a folder. Drop a picture in `input/`, and its result comes back in `output/` with the same name. The graph travels with the folder. You choose which prompts, sizes, and seeds a run can change. Automatic setup needs download sources and pinned node revisions in the shared manifest; Block Party flags missing sources and conflicting dependencies before the job starts.
 
 The launcher is still `python -m one_job`. Run it from this project folder.
 
@@ -37,6 +45,8 @@ python -m one_job prepare jobs/dot
 ## Preparing a received job
 
 The easiest path is `python -m one_job runweb jobs/<name>`. Click **Check dependencies**, review the download sources and node revisions, then **Confirm downloads and installs / Prepare**. Progress appears in the page. Once prepared, use **Run**.
+
+![Block Party prompt editor showing individual scene text files, seed controls, and preparation options](docs/images/prompt-editor.png)
 
 Authors enter direct HTTPS model and LoRA download URLs in the ComfyUI export dialog, along with **Public download**, **Hugging Face token**, or **Civitai API key**. Export records the local file's SHA256 and size, plus each custom node's repository and commit. Use a Hugging Face `/resolve/<revision>/<file>` URL or a Civitai `/api/download/models/<version>` URL, rather than a model web page. Prefer an immutable revision. Keys must never appear in URLs or shared manifests. Blank sources remain supported for manually installed models, but prevent automatic installation when those files are missing. Older jobs need their `models[].url` fields filled or a new export.
 
@@ -189,11 +199,15 @@ That queues four runs, named `1`, `2`, `3`, and `4`. A later `--count 2` continu
 
 Export also creates `share/<job-name>.zip` alongside `jobs/`. The ZIP contains a job folder with the API workflow, dependency manifest, generated README, and empty input/output folders. **Include example inputs** optionally adds supported media and `.txt` prompts currently in that job's `input/` folder; it does not copy claimed inputs from previous runs. Review those files before including them. Run state, previous outputs, model weights, node code and machine settings are excluded. Re-exporting a name replaces its ZIP. The success dialog has **Open share folder**.
 
+![ComfyUI export dialog with model download sources and controls for choosing editable workflow parameters](docs/images/export-dialog.png)
+
 Recipients install Block Party, extract the job folder into `jobs/`, start and link ComfyUI, then open `python -m one_job runweb jobs/<job-name>` to check and approve dependency installation. The CLI prepare command also supports provisioning.
 
 ## Share and start a complete project
 
 Project packages contain an ordered `project.json`, individual job contracts, prompt examples and caption assets. A single **Start project** runs dependency preparation, images, video clips, and fixed FFmpeg assembly. Earlier stages provide declared input slots to later jobs; a failed stage stops the chain. Existing completed job results are reused. Shared model/node pin conflicts require isolated profiles. Idle shared hosts unload models between stages; project-owned profiles stop between stages to release GPU memory.
+
+![Singularity project overview showing the images to video to assembly sequence and dependency review option](docs/images/project-chain.png)
 
 ```powershell
 python -m one_job project create projects/my_film --jobs image_job video_job --duration 90 --clip-seconds 9 --captions jobs/video_job/captions
