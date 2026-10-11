@@ -217,7 +217,7 @@ python -m one_job runweb projects/my_film
 
 The ZIP is `share/my_film.zip`. Extract it into `projects/` on the receiving machine. Review dependencies in the page; enable isolated environments if needed, provide gated-download tokens, and start. Terminal alternatives are `project inspect`, `project prepare`, and `project run`; preparation/run accept `--isolated`, `--restart`, and `--yes`. FFmpeg and FFprobe must be on PATH for assembly. Project cancellation applies between render/assembly steps and during downloads; submitted GPU prompts finish normally. Project manifests select built-in job and video-assembly steps and cannot provide shell commands.
 
-`share/singularity.zip` contains the ten-scene singularity project with image/video prompts and captions. Its original model contracts lack download URLs, so fill those sources before using it on an installation without those weights. The clean-install render remains to be verified. Model weights, node code, credentials, previous outputs and run state are excluded from project ZIPs.
+Jobs and project packages are kept locally and ignored by Git. Export your own workflow or unpack a shared ZIP before following these examples; example job names in this README are placeholders. Model weights, node code, credentials, previous outputs and run state are excluded from project ZIPs. The screenshots illustrate a locally created singularity project, which is not bundled in the repository.
 
 In ComfyUI, **Comfyui_BlockParty → Export job** writes the folder. Restart ComfyUI after this node is added or updated, or the menu item is the previous one. Check the values a run may change. The design notes are in `CONCEPT.md`.
 
