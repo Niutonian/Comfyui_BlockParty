@@ -12,6 +12,9 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from one_job.errors import StepError
+from one_job.paths import contained, relative_parts, single_segment
+
 
 @dataclass
 class HostLink:
@@ -72,7 +75,16 @@ def save_link(link: HostLink) -> Path:
 
 
 def link_is_valid(link: HostLink) -> bool:
-    return is_comfy_root(Path(link.comfy_root)) and Path(link.python).is_file()
+    if not is_comfy_root(Path(link.comfy_root)) or not Path(link.python).is_file():
+        return False
+    # Imported here so host can stay the module that finds ComfyUI.
+    from one_job.comfy import assert_loopback
+
+    try:
+        assert_loopback(link.url)
+    except StepError:
+        return False
+    return True
 
 
 def is_comfy_root(path: Path) -> bool:
@@ -156,10 +168,12 @@ def link_from_folder(path: Path, url: str = "http://127.0.0.1:8188") -> HostLink
 
 
 def server_is_comfy(url: str, timeout: float = 3) -> bool:
+    from one_job.comfy import _request, assert_loopback
     try:
-        with urllib.request.urlopen(url.rstrip("/") + "/system_stats", timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+        assert_loopback(url)
+        _, raw = _request(url.rstrip("/") + "/system_stats", timeout=timeout)
+        payload = json.loads(raw.decode("utf-8"))
+    except (StepError, OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
         return False
     system = payload.get("system") if isinstance(payload, dict) else None
     return isinstance(system, dict) and "comfyui_version" in system
@@ -203,7 +217,14 @@ def _pid_from_netstat(text: str, port: int) -> int | None:
     return None
 
 
-def _listening_pid(port: int) -> int | None:
+def _listening_pid(port: int, host: str = "127.0.0.1") -> int | None:
+    if os.name != "nt":
+        try:
+            result = subprocess.run(["lsof", "-nP", f"-iTCP@{host}:{port}", "-sTCP:LISTEN", "-t"], capture_output=True, timeout=10)
+            pids = set(result.stdout.decode().split())
+            return int(next(iter(pids))) if len(pids) == 1 else None
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return None
     try:
         completed = subprocess.run(
             ["netstat", "-ano", "-p", "tcp"],
@@ -213,7 +234,16 @@ def _listening_pid(port: int) -> int | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return _pid_from_netstat(_decode_output(completed.stdout), port)
+    allowed = {"0.0.0.0", "[::]", "::", host, f"[{host}]"}
+    if host == "localhost":
+        allowed.update({"127.0.0.1", "[::1]"})
+    rows = []
+    for line in _decode_output(completed.stdout).splitlines():
+        match = _NETSTAT_LINE.match(line.strip())
+        if match and match.group(1) in allowed:
+            rows.append(line)
+    pids = {_pid_from_netstat(line, port) for line in rows} - {None}
+    return next(iter(pids)) if len(pids) == 1 else None
 
 
 def launch_command(link: HostLink) -> list[str]:
@@ -231,6 +261,21 @@ def launch_command(link: HostLink) -> list[str]:
 
 
 def _process_command(pid: int) -> tuple[str | None, str | None]:
+    if os.name != "nt":
+        try:
+            proc = Path("/proc") / str(pid)
+            if proc.is_dir():
+                executable = str((proc / "exe").resolve(strict=True))
+                args = (proc / "cmdline").read_bytes().decode().split("\0")
+                cwd = (proc / "cwd").resolve(strict=True)
+                args = [str(cwd / arg) if arg.endswith("main.py") and not Path(arg).is_absolute() else arg for arg in args]
+                return executable, " ".join('"' + arg + '"' for arg in args)
+            command = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, timeout=10)
+            text = command.stdout.decode().strip()
+            executable = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, timeout=10).stdout.decode().strip()
+            return executable, text
+        except (OSError, UnicodeError, subprocess.TimeoutExpired):
+            return None, None
     script = (
         "$p = Get-CimInstance Win32_Process -Filter \"ProcessId="
         + str(pid)
@@ -277,11 +322,12 @@ def _resolve_main(executable: str | None, command_line: str | None) -> Path | No
     return None
 
 
-def link_from_running_server(port: int = 8188) -> HostLink | None:
-    url = f"http://127.0.0.1:{port}"
+def link_from_running_server(port: int = 8188, host: str = "127.0.0.1") -> HostLink | None:
+    authority = f"[{host}]" if ":" in host else host
+    url = f"http://{authority}:{port}"
     if not server_is_comfy(url):
         return None
-    pid = _listening_pid(port)
+    pid = _listening_pid(port, host)
     executable, command = (None, None)
     if pid is not None:
         executable, command = _process_command(pid)
@@ -409,7 +455,8 @@ def _extra_yaml_files(comfy_root: Path) -> list[Path]:
 
 
 def model_dirs_for(comfy_root: Path, folder: str) -> list[Path]:
-    dirs = [comfy_root / "models" / folder]
+    aliases = {"diffusion_models": ["unet", "diffusion_models"], "text_encoders": ["text_encoders", "clip"], "controlnet": ["controlnet", "t2i_adapter"]}
+    dirs = [comfy_root / "models" / name for name in aliases.get(folder, [folder])]
     for path in _extra_yaml_files(comfy_root):
         try:
             blocks = parse_extra_model_yaml(path.read_text(encoding="utf-8", errors="ignore"))
@@ -442,8 +489,13 @@ def model_dirs_for(comfy_root: Path, folder: str) -> list[Path]:
 
 
 def find_model_file(comfy_root: Path, folder: str, filename: str) -> Path | None:
+    single_segment(str(folder or ""), "model folder")
+    relative_parts(str(filename or ""), "model file")
     for directory in model_dirs_for(comfy_root, folder):
         candidate = directory / filename
-        if candidate.is_file():
-            return candidate
+        if not candidate.is_file():
+            continue
+        if not contained(candidate, directory):
+            raise StepError("bad_input", f"{filename} leaves the model folder")
+        return candidate
     return None

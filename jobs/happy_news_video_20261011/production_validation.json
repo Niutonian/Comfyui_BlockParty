@@ -1,0 +1,52 @@
+{
+  "source": "https://www.worldwildlife.org/news/stories/from-one-mother-to-nine-cubs-the-tiger-helping-tell-thailands-recovery-story/",
+  "slices": [
+    {
+      "name": "scene_01",
+      "raw_duration": "9.416667",
+      "edit_duration": 9
+    },
+    {
+      "name": "scene_02",
+      "raw_duration": "9.416667",
+      "edit_duration": 9
+    },
+    {
+      "name": "scene_03",
+      "raw_duration": "9.416667",
+      "edit_duration": 9
+    },
+    {
+      "name": "scene_04",
+      "raw_duration": "9.416667",
+      "edit_duration": 9
+    },
+    {
+      "name": "scene_05",
+      "raw_duration": "9.416667",
+      "edit_duration": 9
+    }
+  ],
+  "oom_errors": 0,
+  "final": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_type": "video",
+        "width": 1280,
+        "height": 720,
+        "duration": "45.000000",
+        "nb_frames": "1080"
+      },
+      {
+        "codec_type": "audio",
+        "duration": "45.000000",
+        "nb_frames": "2111"
+      }
+    ],
+    "format": {
+      "duration": "45.000000"
+    }
+  }
+}

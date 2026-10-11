@@ -104,9 +104,11 @@ One package. One launcher. A linked ComfyUI the user already has. Pinned nodes a
 
 ## Host
 
-The current user already has ComfyUI. The launcher detects that install, locates its folder, or asks the user to add the path, then links the job to it. A later version may install a portable ComfyUI, set it up, and run the job when no install exists. That installer is out of scope until the linked-install path works. `comfy_not_found` is the code that installer will later handle. Today the only repair is to choose a folder.
+The current user already has ComfyUI. The launcher detects that install, locates its folder, or asks the user to add the path, then links the job to it. A later version may install a portable ComfyUI, set it up, and run the job when no install exists. That portable installer is still out of scope. `comfy_not_found` is the code it will later handle. Today the only repair is to choose a folder.
 
-The link is machine-wide. It lives in the launcher's own config, and every job reuses it. A job's `state/` records which link it was prepared against. It does not store a second copy of the path as part of the shared package.
+This project installs into that existing ComfyUI under the custom-node name `Comfyui_BlockParty`. `install.bat` on Windows and `install.sh` on Linux and macOS create one link, `custom_nodes/Comfyui_BlockParty`, pointing at this folder. They do not install ComfyUI, node packs, or models, and they do not start the server.
+
+The link is machine-wide. It lives in the launcher's own config, and every job reuses it. Preparation approval lives next to that link, outside the job folder. A copied `state/prepared.json` does not authorize a run. Resume and progress notes stay in the job's `state/`.
 
 Detection stops at the first valid saved link. Otherwise it checks, in order:
 
@@ -140,7 +142,7 @@ v1 runs on a ComfyUI the user already has. There is no local operator and no por
 
 The manifest names exact sources. A node pack is a folder name, a git URL, and a commit. A model is a filename, a folder type, a URL, and a SHA-256. Each media slot names the node id, the class type, the input key, the allowed extensions, and a drop name. A variant is a second complete workflow file. A job with one workflow records that choice and does not probe.
 
-Drop names follow the graph. Image loaders become `image_0`, `image_1`, in node-id order. Video loaders become `video_0`, `video_1`. A job with one slot still accepts any filename. A job with several slots runs when every named file is in `input/` together. The Block Party menu command Export job writes that folder from the open graph, including the hashes of models already on disk. A missing model or a missing Save node stops the export. A custom node pack is recorded and must already be installed at that commit. The button does not install it.
+Drop names follow the graph. Image loaders become `image_0`, `image_1`, in node-id order. Video loaders become `video_0`, `video_1`. A job with one slot still accepts any filename. A job with several slots runs when every slot is filled, by the names `image_0` and `video_0` or by one prefix plus the slot index (`meteor_0`, `meteor_1`). A `.txt` file with that prefix replaces the prompt for that run. A graph with no image or video loader is a text job. Drop a `.txt` file to replace the prompt for that run, or pass `--count` to queue the saved prompt that many times. A random seed is rolled for each of those runs. The Comfyui_BlockParty menu command Export job writes that folder from the open graph, including the hashes of models already on disk. A missing model or a missing Save node stops the export. A custom node pack is recorded and must already be installed at that commit. The button does not install it.
 
 The export confirm lists the primitive values on the graph: prompt, size, seed, steps, and similar widgets. The author checks the ones a run may change. Unchecked widgets stay baked into the workflow. Models, node wiring, and image or video slots stay fixed. Defaults live in the manifest. Edits live in `state/parameters.json`, so a shared folder keeps the author's defaults and a re-export leaves local edits in place. The queue writes a value only when the node id and the class type still match. Changing a parameter does not require prepare. Changing the graph still pauses the drop folder until prepare runs again.
 
@@ -148,4 +150,4 @@ Size stays inside the min, max, and step chosen at export. The ceiling starts at
 
 A dropped file is moved aside before it is queued, so a crash cannot run it twice. If the workflow or the manifest changes after prepare, the watcher pauses until prepare runs again (`stale_contract`). New node packs need a ComfyUI restart before the queue starts. If the launcher did not start that process, it asks first. When the launcher starts ComfyUI, the server has to be on localhost.
 
-The first slice does not install a node and does not download a model. It links the running install, queues one workflow whose model is already on disk, drops one image, and copies one result into the job's `output/`.
+The first slice originally only verified installed dependencies. Dependency provisioning now exists in CLI preparation and runweb: review one plan, confirm, download SHA256-pinned model files, and install missing pinned node packs with their Python requirements. Exports accept model source URLs and gated-provider metadata. Credentials are local or one-time inputs. Conflicting installed dependencies are never replaced. New node packs require a manual ComfyUI restart before preparation completes; automatic host restart, arbitrary install scripts, submodules and workflow variants remain outside this implementation. See README.md for the current flow.

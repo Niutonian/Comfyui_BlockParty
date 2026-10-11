@@ -18,7 +18,7 @@ const PARAM_NAME = /^[a-z][a-z0-9_]{0,40}$/;
 function notify(severity, detail) {
 	const toast = app.extensionManager && app.extensionManager.toast;
 	if (toast) {
-		toast.add({ severity, summary: "Block Party", detail, life: 8000 });
+		toast.add({ severity, summary: "Comfyui_BlockParty", detail, life: 8000 });
 		return;
 	}
 	window.alert(detail);
@@ -241,7 +241,16 @@ function aligned(value, low, step) {
 	return Math.abs(span - Math.round(span)) <= 1e-6;
 }
 
+function hasMedia(workflow) {
+	return Object.values(workflow).some((node) => {
+		const kind = node && node.class_type;
+		return kind === "LoadImage" || kind === "LoadImageMask" || kind === "LoadVideo"
+			|| kind === "VHS_LoadVideo" || kind === "VHS_LoadVideoPath";
+	});
+}
+
 function openDialog(workflow, rows) {
+	const textOnly = !hasMedia(workflow);
 	ensureStyle();
 	const existing = document.getElementById("block-party-export");
 	if (existing) {
@@ -256,9 +265,13 @@ function openDialog(workflow, rows) {
 	title.textContent = "Export job";
 	const note = document.createElement("p");
 	note.className = "bp-note";
-	note.textContent = rows.length
-		? "Check the values a run may change. The ceiling starts at the current value."
-		: "This graph has no primitive values to expose.";
+	if (textOnly) {
+		note.textContent = "No image or video slot. Check the prompt and the seed. Drop a .txt file later, or run with --count.";
+	} else if (rows.length) {
+		note.textContent = "Check the values a run may change. The ceiling starts at the current value.";
+	} else {
+		note.textContent = "This graph has no primitive values to expose.";
+	}
 	const nameLabel = document.createElement("label");
 	nameLabel.textContent = "Job name";
 	const nameInput = document.createElement("input");
@@ -267,6 +280,72 @@ function openDialog(workflow, rows) {
 	nameInput.autocomplete = "off";
 	nameLabel.appendChild(nameInput);
 	const list = document.createElement("div");
+	const sources = document.createElement("div");
+	const sourceTitle = document.createElement("h2");
+	sourceTitle.textContent = "Model download sources";
+	sources.appendChild(sourceTitle);
+	const sourceNote = document.createElement("p");
+	sourceNote.textContent = "Add direct HTTPS download URLs so recipients can install missing models. Leave API keys out; recipients provide their own. Blank URLs require manual setup.";
+	sources.appendChild(sourceNote);
+	const modelFields = [];
+	const seenModels = new Set();
+	Object.values(workflow).forEach((node) => Object.entries(node.inputs || {}).forEach(([key, value]) => {
+		if (!isModelName(value)) return;
+		const identity = `${node.class_type}:${key}:${value}`;
+		if (seenModels.has(identity)) return;
+		seenModels.add(identity);
+		const label = document.createElement("label");
+		label.textContent = value;
+		const url = document.createElement("input");
+		url.type = "url";
+		url.placeholder = "https://huggingface.co/.../resolve/.../model.safetensors";
+		url.style.width = "100%";
+		const auth = document.createElement("select");
+		for (const [value, text] of [["", "Public download"], ["huggingface", "Hugging Face token"], ["civitai", "Civitai API key"]]) {
+			const option = document.createElement("option"); option.value = value; option.textContent = text; auth.appendChild(option);
+		}
+		label.append(url, auth); sources.appendChild(label);
+		const field = { class_type: node.class_type, key, filename: value, url, auth, sha256: null };
+		url.addEventListener("input", () => { field.sha256 = null; field.autofilled = false; field.edited = true; });
+		modelFields.push(field);
+	}));
+	async function loadSources(discover = false) {
+		const name = nameInput.value.trim();
+		if (!JOB_NAME.test(name)) return;
+		const response = await api.fetchApi("/block_party/sources", {
+			method: "POST", headers: { "Content-Type": "application/json", "X-Block-Party": "export" },
+			body: JSON.stringify({ name, workflow, discover }),
+		});
+		const result = await response.json();
+		if (!response.ok || !result.ok || nameInput.value.trim() !== name) return;
+		for (const source of result.sources) {
+			const item = modelFields.find(item => item.filename === source.filename && item.class_type === source.class_type && item.key === source.key);
+			if (item && !item.url.value && source.url) {
+				item.url.value = source.url; item.auth.value = source.auth || "";
+				item.sha256 = source.sha256; item.autofilled = true;
+			}
+		}
+	}
+	nameInput.addEventListener("change", () => {
+		for (const item of modelFields) if (item.autofilled) { item.url.value = ""; item.sha256 = null; item.autofilled = false; }
+		loadSources().catch(console.error);
+	});
+	const discoverButton = document.createElement("button");
+	discoverButton.type = "button";
+	discoverButton.textContent = "Find missing sources by hash (after export)";
+	discoverButton.addEventListener("click", async () => {
+		discoverButton.disabled = true;
+		status.textContent = "Looking for exact SHA256 matches on Civitai.";
+		try { await loadSources(true); submit.disabled = false; submit.hidden = false; submit.textContent = "Export updated sources";
+			status.textContent = "Review found URLs, then export again to save them. Files without a match need an author-provided URL.";
+		} catch (error) { status.textContent = "Lookup failed. You can enter download URLs manually."; }
+		finally { discoverButton.disabled = false; }
+	});
+	sources.appendChild(discoverButton);
+	const examplesLabel = document.createElement("label");
+	const examples = document.createElement("input");
+	examples.type = "checkbox";
+	examplesLabel.append(examples, document.createTextNode(" Include example inputs from this job's input folder (images, videos and prompts)"));
 	list.className = "bp-list";
 	const fields = rows.map((row) => {
 		const wrap = document.createElement("div");
@@ -330,7 +409,7 @@ function openDialog(workflow, rows) {
 	submit.type = "submit";
 	submit.textContent = "Export";
 	actions.append(cancel, submit);
-	panel.append(title, note, nameLabel, list, status, actions);
+	panel.append(title, note, nameLabel, examplesLabel, sources, list, status, actions);
 	back.appendChild(panel);
 	document.body.appendChild(back);
 	nameInput.focus();
@@ -347,6 +426,7 @@ function openDialog(workflow, rows) {
 
 	panel.addEventListener("submit", async (event) => {
 		event.preventDefault();
+		if (submit.disabled) return;
 		const name = nameInput.value.trim();
 		if (!JOB_NAME.test(name)) {
 			status.textContent = "Job name must start with a letter or digit and use only letters, digits, _ and -.";
@@ -364,8 +444,13 @@ function openDialog(workflow, rows) {
 		try {
 			const response = await api.fetchApi("/block_party/export", {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ name, workflow, parameters }),
+				headers: { "Content-Type": "application/json", "X-Block-Party": "export" },
+				body: JSON.stringify({ name, workflow, parameters, include_inputs: examples.checked,
+					model_sources: modelFields.filter(item => item.url.value.trim() || item.edited).map(item => ({
+						class_type: item.class_type, key: item.key, filename: item.filename,
+						url: item.url.value.trim(), auth: item.auth.value || null,
+						sha256: item.sha256,
+					})) }),
 			});
 			let body = {};
 			try {
@@ -378,10 +463,27 @@ function openDialog(workflow, rows) {
 				status.textContent = body.message || "Export failed.";
 				return;
 			}
-			close();
+			const missing = body.missing_sources || [];
+			status.textContent = `Exported. Share ZIP: ${body.share_zip}` + (missing.length ? ` — ${missing.length} model(s) still need download URLs for automatic setup: ${missing.join(", ")}` : " — All model download sources supplied.");
+			submit.hidden = true;
+			cancel.textContent = "Close";
+			const openShare = document.createElement("button");
+			actions.querySelector(".bp-open-share")?.remove();
+			openShare.className = "bp-open-share";
+			openShare.type = "button";
+			openShare.textContent = "Open share folder";
+			openShare.addEventListener("click", async () => {
+				try {
+					const result = await api.fetchApi("/block_party/open_share", {
+						method: "POST", headers: { "X-Block-Party": "export" },
+					});
+					if (!result.ok) notify("error", "Could not open the share folder. Use the ZIP path shown above.");
+				} catch (error) { notify("error", "Could not open the share folder."); }
+			});
+			actions.appendChild(openShare);
 			const ready = body.prepared ? "Prepared." : "Run prepare in the launcher before dropping files.";
 			const exposed = body.parameters && body.parameters.length ? `Editable: ${body.parameters.join(", ")}.` : "";
-			notify("success", [body.job, body.hint, exposed, ready].filter(Boolean).join("\n"));
+			notify("success", [body.job, `Share ZIP: ${body.share_zip}`, body.hint, exposed, ready].filter(Boolean).join("\n"));
 		} catch (error) {
 			submit.disabled = false;
 			status.textContent = "Export failed.";
@@ -423,7 +525,7 @@ function readRow(item) {
 }
 
 app.registerExtension({
-	name: "BlockParty.Export",
+	name: "Comfyui_BlockParty.Export",
 	commands: [
 		{
 			id: "BlockParty.ExportJob",
@@ -455,7 +557,7 @@ app.registerExtension({
 	],
 	menuCommands: [
 		{
-			path: ["Block Party"],
+			path: ["Comfyui_BlockParty"],
 			commands: ["BlockParty.ExportJob"],
 		},
 	],

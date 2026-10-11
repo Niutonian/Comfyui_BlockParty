@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "singularity",
+  "steps": [
+    {
+      "id": "images",
+      "type": "job",
+      "job": "images"
+    },
+    {
+      "id": "video",
+      "type": "job",
+      "job": "video",
+      "bindings": [
+        {
+          "from": "images",
+          "output": 0,
+          "slot": "image_0"
+        }
+      ],
+      "prompts": "assets/video_prompts"
+    },
+    {
+      "id": "assembly",
+      "type": "join_video",
+      "from": "video",
+      "output": 0,
+      "seconds_per_clip": 9.0,
+      "duration": 90.0,
+      "filename": "singularity.mp4",
+      "footer": "AI-generated visuals",
+      "captions": "assets/captions"
+    }
+  ]
+}

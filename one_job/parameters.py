@@ -14,6 +14,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from one_job.errors import StepError
+from one_job.paths import assert_unlinked
 from one_job.slots import (
     IMAGE_LOADERS,
     IMAGE_SAVERS,
@@ -110,6 +111,21 @@ def accept_parameters(workflow: dict, raw) -> list[dict]:
     return accepted
 
 
+def prompt_parameter(manifest: dict) -> dict | None:
+    """The string a dropped .txt file replaces.
+
+    A parameter named text or prompt wins. Otherwise the only string is used.
+    """
+    strings = [spec for spec in _spec_map(manifest).values() if spec.get("type") == "string"]
+    for name in ("text", "prompt"):
+        named = [spec for spec in strings if spec.get("name") == name]
+        if len(named) == 1:
+            return named[0]
+    if len(strings) == 1:
+        return strings[0]
+    return None
+
+
 def verify_parameter_contract(workflow: dict, manifest: dict) -> None:
     accept_parameters(workflow, manifest.get("parameters") or [])
 
@@ -120,6 +136,7 @@ def parameters_path(job_dir: Path) -> Path:
 
 def read_overrides(job_dir: Path) -> dict:
     path = parameters_path(job_dir)
+    assert_unlinked(job_dir, path, "parameters")
     if not path.is_file():
         return {}
     try:
@@ -477,9 +494,11 @@ def _show(value) -> str:
 
 def _write_overrides(job_dir: Path, overrides: dict) -> None:
     path = parameters_path(job_dir)
+    assert_unlinked(job_dir, path, "parameters")
     if not overrides:
         if path.is_file():
             path.unlink()
         return
     path.parent.mkdir(parents=True, exist_ok=True)
+    assert_unlinked(job_dir, path, "parameters")
     path.write_text(json.dumps(overrides, indent=2) + "\n", encoding="utf-8")

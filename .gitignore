@@ -8,11 +8,26 @@ jobs/*/output/*
 !jobs/*/output/.gitkeep
 
 # Python
+.env
+downloads.env
+.block-party-staging/
+share/
 __pycache__/
 .venv/
 *.pyc
+
+# Disposable security checks and live-test artifacts.
+security_review/.tmp/
+security_review/.live-tests/
 
 # OS
 Thumbs.db
 Desktop.ini
 .DS_Store
+security_review/happy_news_20261011.log
+security_review/comfy_original_news_command.txt
+jobs/happy_news_video_20261011/edit/
+security_review/serious_news_20261011.log
+jobs/serious_news_upscaled_20261011/edit/
+security_review/singularity_20261011.log
+jobs/singularity_upscaled_20261011/edit/

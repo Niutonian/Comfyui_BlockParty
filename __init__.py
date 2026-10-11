@@ -1,0 +1,267 @@
+"""Comfyui_BlockParty export button. One click writes a job folder the launcher can run."""
+
+from __future__ import annotations
+
+import inspect
+import asyncio
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import folder_paths
+import nodes
+from aiohttp import web
+from server import PromptServer
+
+from one_job.errors import StepError
+from one_job.export_job import build_manifest, clean_name, hint_for, write_job, write_share
+from one_job.host import _decode_output, load_link
+from one_job.job import save_preparation, sha256_file
+from one_job.paths import contained, relative_parts
+from one_job.security import export_request_allowed
+from one_job.sources import previous_sources, discover_civitai
+
+_MAX_EXPORT = 32 * 1024 * 1024
+_LOCAL_PEERS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
+
+WEB_DIRECTORY = "./web"
+NODE_CLASS_MAPPINGS = {}
+NODE_DISPLAY_NAME_MAPPINGS = {}
+
+
+def _custom_nodes_dir() -> Path:
+    return Path(folder_paths.get_folder_paths("custom_nodes")[0])
+
+
+def _jobs_root() -> Path:
+    override = os.environ.get("BLOCK_PARTY_ROOT")
+    if override:
+        return Path(override) / "jobs"
+    if (ROOT / "one_job").is_dir():
+        return ROOT / "jobs"
+    raise StepError("bad_input", "Comfyui_BlockParty was not found next to this node")
+
+
+def _resolve_model(filename: str, folder: str | None = None):
+    if not isinstance(filename, str) or not filename:
+        return None
+    try:
+        relative_parts(filename, "model file")
+    except StepError:
+        return None
+    names = [folder] if folder else [name for name in folder_paths.folder_names_and_paths if name != "custom_nodes"]
+    for name in names:
+        if not name or name == "custom_nodes":
+            continue
+        full = folder_paths.get_full_path(name, filename)
+        if not full:
+            continue
+        roots = folder_paths.get_folder_paths(name) or []
+        if any(contained(Path(full), Path(root)) for root in roots):
+            return name, full
+    return None
+
+
+def _git(pack: Path, *args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(pack), *args],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return _decode_output(completed.stdout).strip() or None
+
+
+def _resolve_pack(class_type: str | None):
+    if not class_type:
+        return None
+    cls = nodes.NODE_CLASS_MAPPINGS.get(class_type)
+    if cls is None:
+        return None
+    module = inspect.getmodule(cls)
+    file_name = getattr(module, "__file__", None) if module else None
+    if not file_name:
+        return None
+    path = Path(file_name).resolve()
+    custom_root = _custom_nodes_dir()
+    try:
+        relative = path.relative_to(custom_root.resolve())
+    except ValueError:
+        relative = None
+    pack = None
+    if relative is not None and relative.parts:
+        pack = custom_root / relative.parts[0]
+    else:
+        # A junction's files resolve outside custom_nodes. The pack name is the
+        # link's own folder, which is the directory git and the manifest use.
+        pack = _pack_by_target(custom_root, path)
+    if pack is None:
+        return None
+    return {
+        "name": pack.name,
+        "git_url": _git(pack, "remote", "get-url", "origin"),
+        "commit": _git(pack, "rev-parse", "HEAD"),
+    }
+
+
+def _pack_by_target(custom_root: Path, module_file: Path) -> Path | None:
+    try:
+        children = list(custom_root.iterdir())
+    except OSError:
+        return None
+    match = None
+    match_length = -1
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+            resolved = child.resolve()
+        except OSError:
+            continue
+        if module_file == resolved or resolved in module_file.parents:
+            length = len(resolved.parts)
+            if length > match_length:
+                match = child
+                match_length = length
+    return match
+
+
+def _mark_prepared(job: Path, link, manifest: dict) -> None:
+    models = {f"{model['folder']}/{model['filename']}": model["sha256"] for model in manifest["models"]}
+    save_preparation(job, link, manifest, job / "workflow.api.json", models)
+
+
+def _peer_is_local(remote: str | None) -> bool:
+    if not remote:
+        return False
+    return remote.rsplit("%", 1)[0] in _LOCAL_PEERS
+
+
+@PromptServer.instance.routes.post("/block_party/export")
+async def export_job(request):
+    if not export_request_allowed(request.remote, request.headers):
+        return web.json_response(
+            {"ok": False, "code": "bad_input", "message": "export is only available from this computer"},
+            status=403,
+        )
+    try:
+        if request.content_length is not None and request.content_length > _MAX_EXPORT:
+            raise StepError("bad_input", "export request is larger than 32 MB")
+        raw = bytearray()
+        async for chunk in request.content.iter_chunked(65536):
+            raw.extend(chunk)
+            if len(raw) > _MAX_EXPORT:
+                raise StepError("bad_input", "export request is larger than 32 MB")
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise StepError("bad_input", "request was not a job export")
+        name = clean_name(str(payload.get("name") or ""))
+        include_inputs = payload.get("include_inputs", False)
+        if type(include_inputs) is not bool:
+            raise StepError("bad_input", "include_inputs must be a boolean")
+        workflow = payload.get("workflow")
+        if not isinstance(workflow, dict):
+            raise StepError("bad_input", "workflow is missing")
+        manifest = await asyncio.to_thread(build_manifest,
+            workflow,
+            _resolve_model,
+            _resolve_pack,
+            sha256_file,
+            name=name,
+            parameters=payload.get("parameters", []),
+            model_sources=payload.get("model_sources", []),
+            saved_sources=await asyncio.to_thread(previous_sources, _jobs_root(), name, workflow),
+        )
+        job = await asyncio.to_thread(write_job, _jobs_root(), name, workflow, manifest)
+        archive = await asyncio.to_thread(write_share, _jobs_root(), name, workflow, manifest, include_inputs)
+        prepared = False
+        link = load_link()
+        if link is not None and Path(link.comfy_root).resolve() == Path(folder_paths.base_path).resolve():
+            from one_job.job import prepare_job
+            await asyncio.to_thread(prepare_job, job, link)
+            prepared = True
+        return web.json_response(
+            {
+                "ok": True,
+                "job": str(job),
+                "share_zip": str(archive),
+                "prepared": prepared,
+                "hint": hint_for(manifest),
+                "inputs": manifest["inputs"],
+                "outputs": manifest["outputs"],
+                "models": [model["filename"] for model in manifest["models"]],
+                "parameters": [item["name"] for item in manifest["parameters"]],
+                "missing_sources": [f"{m['folder']}/{m['filename']}" for m in manifest['models'] if not m.get('url')],
+            }
+        )
+    except StepError as error:
+        return web.json_response(
+            {"ok": False, "code": error.code, "message": error.message},
+            status=400,
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return web.json_response(
+            {"ok": False, "code": "bad_input", "message": "request was not JSON"},
+            status=400,
+        )
+    except OSError:
+        return web.json_response({"ok": False, "code": "bad_input", "message": "Could not write the export. Check folder permissions and available space."}, status=400)
+
+
+@PromptServer.instance.routes.post("/block_party/open_share")
+async def open_share(request):
+    if not export_request_allowed(request.remote, request.headers):
+        return web.json_response({"ok": False, "message": "available only from this computer"}, status=403)
+    folder = _jobs_root().parent / "share"
+    from one_job.paths import assert_unlinked
+    try:
+        assert_unlinked(_jobs_root().parent, folder, "share folder")
+        if not folder.is_dir():
+            raise StepError("bad_input", "Export a job first")
+        if sys.platform == "win32":
+            os.startfile(str(folder))
+        else:
+            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(folder)])
+        return web.json_response({"ok": True})
+    except (OSError, StepError):
+        return web.json_response({"ok": False, "message": "Could not open the share folder"}, status=400)
+
+
+@PromptServer.instance.routes.post('/block_party/sources')
+async def model_sources(request):
+    if not export_request_allowed(request.remote, request.headers):
+        return web.json_response({'ok': False, 'message': 'local browser only'}, status=403)
+    try:
+        raw = bytearray()
+        async for chunk in request.content.iter_chunked(65536):
+            raw.extend(chunk)
+            if len(raw) > _MAX_EXPORT: raise StepError('bad_input', 'source request is too large')
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or not isinstance(payload.get('workflow'), dict):
+            raise StepError('bad_input', 'source request needs a workflow')
+        name = clean_name(payload.get('name') or '')
+        sources = await asyncio.to_thread(previous_sources, _jobs_root(), name, payload['workflow'])
+        if payload.get('discover') is True:
+            from one_job.provision import credentials
+            tokens = credentials()
+            count = 0
+            for source in sources:
+                if not source.get('url') and count < 20:
+                    count += 1
+                    try: found = await asyncio.to_thread(discover_civitai, source['sha256'], tokens)
+                    except StepError: found = None
+                    if found: source.update(found)
+        return web.json_response({'ok': True, 'sources': sources})
+    except (StepError, ValueError, OSError) as error:
+        return web.json_response({'ok': False, 'message': error.message if isinstance(error, StepError) else 'source lookup failed'}, status=400)

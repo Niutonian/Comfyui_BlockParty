@@ -2,9 +2,10 @@
 
 
 class StepError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, keep_running: bool = False):
         self.code = code
         self.message = message
+        self.keep_running = keep_running
         super().__init__(f"{code}: {message}")
 
 
