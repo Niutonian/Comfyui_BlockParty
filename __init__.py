@@ -34,6 +34,12 @@ WEB_DIRECTORY = "./web"
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
+# Custom packs have all loaded by the time a prompt is submitted. Older pinned
+# H3 versions do not recognize native interior anchors in newer ComfyUI cores.
+from one_job.h3_compatibility import on_prompt as _h3_on_prompt
+if callable(getattr(PromptServer.instance, 'add_on_prompt_handler', None)):
+    PromptServer.instance.add_on_prompt_handler(_h3_on_prompt)
+
 
 def _custom_nodes_dir() -> Path:
     return Path(folder_paths.get_folder_paths("custom_nodes")[0])

@@ -19,7 +19,8 @@ class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temporary.name)
         routes = web.RouteTableDef()
         server = types.ModuleType('server')
-        server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(routes=routes))
+        self.prompt_handlers = []
+        server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(routes=routes, add_on_prompt_handler=self.prompt_handlers.append))
         folder_paths = types.ModuleType('folder_paths')
         folder_paths.base_path = str(self.root)
         nodes = types.ModuleType('nodes')
@@ -39,6 +40,10 @@ class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.close()
         self.temporary.cleanup()
+
+    async def test_extension_registers_native_h3_compatibility_hook(self):
+        from one_job.h3_compatibility import on_prompt
+        self.assertEqual(self.prompt_handlers, [on_prompt])
 
     async def test_preparation_failure_keeps_export_success_and_downloadable_zip(self):
         workflow = {'1': {'class_type': 'SaveImage', 'inputs': {'filename_prefix': 'out'}}}

@@ -31,6 +31,8 @@ Library cards show descriptions, the latest image result, completion counts, and
 
 For multiple references, matching workflow filenames take precedence; other uploads fill compatible empty cards in selection order. The selectors let you assign existing uploads or correct reference order. Applying assignments gives the set a fresh name and carries its matching prompt file along. Original filenames from older exports are also recognized, so three named image loaders can use their original uploaded files without manual renaming. A run with missing references stops before generation and lists what needs to be added.
 
+For older pinned H3 Keyframes nodes on newer ComfyUI, the Block Party ComfyUI extension verifies native first, middle, and last anchor positions before adapting the node's legacy capability check. It does not rewrite ComfyUI's layout or remove the middle reference. Restart ComfyUI after updating the extension, then use **Retry failed items** for an input set that failed this compatibility check.
+
 The workspace uses the robot-party header, a dark theme, and responsive controls. Machine preparation, recovery, and job management live in expandable sections so the main settings remain easy to scan.
 
 - **Save settings** saves edits without rendering. **Prepare and Run** saves, checks dependencies, and starts generation. **Run prepared job** uses the existing local preparation.
