@@ -12,6 +12,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -377,6 +378,40 @@ def run_install(command, cwd, label):
         raise StepError('install_failed', message + ('\n' + detail if detail else ''))
 
 
+def install_python_dependencies(pack, link):
+    """Comfy registry metadata describes dependencies, not necessarily a wheel."""
+    requirements = pack / 'requirements.txt'
+    command = [link.python, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input']
+    if requirements.is_file():
+        run_install(command + ['-r', str(requirements)], pack, 'Python requirements')
+        return
+    project_file = pack / 'pyproject.toml'
+    if project_file.is_file():
+        try:
+            with project_file.open('rb') as handle:
+                metadata = tomllib.load(handle)
+        except (ValueError, OSError):
+            raise StepError('install_failed', 'node pyproject.toml is invalid; no node pack was published') from None
+        if 'comfy' in metadata.get('tool', {}):
+            project = metadata.get('project', {})
+            if not isinstance(project, dict) or not isinstance(project.get('dynamic', []), list):
+                raise StepError('install_failed', 'node Python project metadata is invalid; no node pack was published')
+            dependencies = project.get('dependencies', [])
+            if ('dependencies' in project.get('dynamic', []) or not isinstance(dependencies, list)
+                    or any(not isinstance(item, str) or not re.match(r'^[A-Za-z0-9]', item)
+                           or len(item) > 4096 or '\n' in item or '\r' in item or '\x00' in item
+                           for item in dependencies)):
+                raise StepError('install_failed', 'node Python dependencies must be a static list of requirement strings; no node pack was published')
+            if dependencies:
+                # Keep generated metadata outside the published node repository.
+                requirements = pack.parent / 'block-party-requirements.txt'
+                requirements.write_text('\n'.join(dependencies) + '\n', encoding='utf-8')
+                run_install(command + ['-r', str(requirements)], pack, 'Python requirements')
+            return
+    if project_file.is_file() or (pack / 'setup.py').is_file():
+        run_install(command + [str(pack)], pack, 'Python package')
+
+
 def install_node(action, link):
     from one_job.progress import emit
     emit('installing', message=f"Installing {action['name']} at {action['commit'][:12]}")
@@ -399,13 +434,8 @@ def install_node(action, link):
             subdirs[:] = [p for p in subdirs if p != '.git']
             for name in subdirs + filenames:
                 assert_unlinked(pack, Path(directory) / name, 'node repository file')
-        requirements = pack / 'requirements.txt'
-        if requirements.is_file():
-            emit('installing', message='Installing Python requirements for ' + action['name'])
-            print(f"installing Python requirements for {action['name']}", flush=True)
-            run_install([link.python, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '-r', str(requirements)], pack, 'Python requirements')
-        elif (pack / 'pyproject.toml').is_file() or (pack / 'setup.py').is_file():
-            run_install([link.python, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', str(pack)], pack, 'Python package')
+        emit('installing', message='Checking Python requirements for ' + action['name'])
+        install_python_dependencies(pack, link)
         destination = Path(action['destination'])
         assert_unlinked(Path(link.custom_nodes), destination, 'node install')
         if destination.exists():

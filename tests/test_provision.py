@@ -236,6 +236,70 @@ class ProvisionTests(unittest.TestCase):
                 with self.assertRaises(StepError): p.install_node(action, link)
             self.assertFalse(Path(action['destination']).exists())
 
+    def test_comfy_metadata_dependencies_and_package_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            pack = Path(temporary) / 'repo'; pack.mkdir()
+            link = SimpleNamespace(python='linked-python')
+            project = pack / 'pyproject.toml'
+            for dependencies in ('[]', '["example>=1; python_version >= \'3.10\'"]'):
+                project.write_text('[project]\nname="fixture"\ndependencies=' + dependencies + '\n[tool.comfy]\nPublisherId="fixture"\n')
+                with patch.object(p, 'run_install') as install:
+                    p.install_python_dependencies(pack, link)
+                if dependencies == '[]': install.assert_not_called()
+                else:
+                    command = install.call_args.args[0]
+                    self.assertEqual(command[:4], ['linked-python', '-m', 'pip', 'install'])
+                    self.assertIn('-r', command)
+                    self.assertIn('example>=1;', Path(command[-1]).read_text())
+            project.write_text('[build-system]\nrequires=["setuptools"]\n')
+            with patch.object(p, 'run_install') as install:
+                p.install_python_dependencies(pack, link)
+            self.assertEqual(install.call_args.args[0][-1], str(pack))
+            project.write_text('invalid toml')
+            (pack / 'requirements.txt').write_text('example==1')
+            with patch.object(p, 'run_install') as install:
+                p.install_python_dependencies(pack, link)
+            self.assertEqual(install.call_args.args[0][-1], str(pack / 'requirements.txt'))
+
+    def test_invalid_comfy_dependency_metadata_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            pack = Path(temporary)
+            for declaration in ('dependencies="wrong"', 'dependencies=["--index-url evil"]',
+                                'dynamic=["dependencies"]', 'dependencies=[42]', 'dependencies=["x\\ny"]'):
+                (pack / 'pyproject.toml').write_text('[project]\n' + declaration + '\n[tool.comfy]\nPublisherId="fixture"\n')
+                with self.subTest(declaration=declaration), patch.object(p, 'run_install') as install:
+                    with self.assertRaises(StepError): p.install_python_dependencies(pack, SimpleNamespace(python='python'))
+                    install.assert_not_called()
+
+    def test_real_git_comfy_metadata_pack_publishes_without_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / 'source'; repo.mkdir()
+            for folder in ('nodes', 'workflows', 'assets'):
+                (repo / folder).mkdir()
+                (repo / folder / 'fixture.txt').write_text('fixture')
+            (repo / '__init__.py').write_text('NODE_CLASS_MAPPINGS = {}')
+            (repo / 'pyproject.toml').write_text('[project]\nname="comfyui-h3-fixture"\nversion="2.6.5"\ndependencies=[]\n[tool.comfy]\nPublisherId="fixture"\n')
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(repo), *args], stderr=subprocess.DEVNULL).decode().strip()
+            git('init'); git('add', '.')
+            git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.org', 'commit', '-m', 'Fixture')
+            commit = git('rev-parse', 'HEAD')
+            comfy = root / 'comfy'; comfy.mkdir()
+            link = SimpleNamespace(comfy_root=str(comfy), custom_nodes=str(comfy / 'custom_nodes'), python='must-not-run')
+            action = {'name': 'fixture', 'commit': commit, 'git_url': 'https://github.com/example/fixture.git', 'destination': str(comfy / 'custom_nodes/fixture')}
+            original = p.run_install
+            def transport(command, cwd, label):
+                self.assertEqual(command[0], 'git')
+                if 'clone' in command:
+                    original(['git', 'clone', '--no-checkout', str(repo), command[-1]], cwd, label)
+                else: original(command, cwd, label)
+            with patch.object(p, 'source_url', side_effect=lambda value, **kw: value), patch.object(p, 'run_install', side_effect=transport):
+                p.install_node(action, link)
+            self.assertTrue((Path(action['destination']) / 'nodes/fixture.txt').is_file())
+            from one_job.job import _git_head
+            self.assertEqual(_git_head(Path(action['destination'])), commit)
+
     def test_real_git_and_pip_install_in_isolated_host(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
