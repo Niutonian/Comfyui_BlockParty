@@ -162,6 +162,14 @@ async def model_inputs(request):
     return web.json_response({'ok': True, 'loaders': model_input_catalog()})
 
 
+@PromptServer.instance.routes.get('/block_party/h3_status')
+async def h3_status(request):
+    # Read-only capability information, with tiny CPU probes and no host paths,
+    # workflow content, credentials, model loads, or GPU allocations.
+    from one_job.h3_compatibility import compatibility_status
+    return web.json_response(compatibility_status(nodes.NODE_CLASS_MAPPINGS))
+
+
 @PromptServer.instance.routes.post("/block_party/export_preview")
 @PromptServer.instance.routes.post("/block_party/export")
 async def export_job(request):

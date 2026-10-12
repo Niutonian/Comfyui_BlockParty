@@ -41,7 +41,12 @@ def native_interior_supported():
 def install_native_guard(registry):
     cls = registry.get('H3Keyframes')
     module = sys.modules.get(getattr(cls, '__module__', ''))
-    guard = getattr(module, 'ensure_interior_keyframes', None)
+    # ComfyUI or another extension can wrap/re-export a class. Bind the guard
+    # in the globals used by its actual execution function, not a guessed module.
+    method = getattr(cls, getattr(cls, 'FUNCTION', 'build'), None)
+    namespace = getattr(method, '__globals__', None)
+    if namespace is None: namespace = vars(module) if module is not None else {}
+    guard = namespace.get('ensure_interior_keyframes')
     if not callable(guard) or getattr(guard, '_block_party_native_h3_guard', False) is True: return False
     if not native_interior_supported(): return False
 
@@ -54,8 +59,20 @@ def install_native_guard(registry):
         return guard(*args, **kwargs)
 
     native_guard._block_party_native_h3_guard = True
-    module.ensure_interior_keyframes = native_guard
+    namespace['ensure_interior_keyframes'] = native_guard
     return True
+
+
+def compatibility_status(registry):
+    cls = registry.get('H3Keyframes')
+    method = getattr(cls, getattr(cls, 'FUNCTION', 'build'), None)
+    module = sys.modules.get(getattr(cls, '__module__', ''))
+    namespace = getattr(method, '__globals__', None)
+    if namespace is None: namespace = vars(module) if module is not None else {}
+    guard = namespace.get('ensure_interior_keyframes')
+    return {'version': 2, 'registered': cls is not None,
+            'native_interior': native_interior_supported() if cls is not None else False,
+            'guard_active': getattr(guard, '_block_party_native_h3_guard', False) is True}
 
 
 def on_prompt(payload):

@@ -34,8 +34,9 @@ def selected_checks(workflow, manifest=None, overrides=None):
 
 
 def runtime_issues(link, workflow, manifest=None, overrides=None):
+    issues = h3_runtime_issues(link, workflow)
     checks = selected_checks(workflow, manifest, overrides)
-    if not checks: return []
+    if not checks: return issues
     code = '''import importlib,json,sys
 results=[]
 for check in json.loads(sys.argv[1]):
@@ -58,11 +59,28 @@ print('BLOCK_PARTY_RUNTIME:'+json.dumps(results))
         states = {row['module']: row for row in rows if isinstance(row, dict)}
         if set(states) != {check['module'] for check in checks}: raise ValueError()
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-        return ['Could not check optional runtime packages with the linked ComfyUI Python. Verify its executable and installed packages, then check dependencies again.']
+        return issues + ['Could not check optional runtime packages with the linked ComfyUI Python. Verify its executable and installed packages, then check dependencies again.']
     from one_job.diagnostics import redact, known_secrets
     secrets = known_secrets()
-    return [redact(check['reason'] + ' is unavailable: ' + str(states[check['module']].get('error', 'import failed')) + '. ' + check['help'], secrets)
+    return issues + [redact(check['reason'] + ' is unavailable: ' + str(states[check['module']].get('error', 'import failed')) + '. ' + check['help'], secrets)
             for check in checks if states[check['module']].get('ok') is not True]
+
+
+def h3_runtime_issues(link, workflow):
+    if not any(isinstance(node, dict) and node.get('class_type') == 'H3Keyframes' for node in workflow.values()): return []
+    from one_job.host import server_is_comfy
+    if not server_is_comfy(link.url): return []  # Preparation can start the host later.
+    from one_job.comfy import _request
+    try:
+        _, body = _request(link.url.rstrip('/') + '/block_party/h3_status', timeout=15)
+        status = json.loads(body)
+        if not isinstance(status, dict) or status.get('version') != 2: raise ValueError()
+    except (StepError, ValueError, TypeError):
+        return ['The running ComfyUI has not loaded the current Block Party H3 compatibility check. Update Block Party in ComfyUI/custom_nodes/Comfyui_BlockParty and fully restart ComfyUI, then check dependencies again. Restarting runweb alone does not reload ComfyUI extensions.']
+    if status.get('registered') is not True: return []  # The dependency plan can install the missing pack.
+    if status.get('native_interior') is not True:
+        return ['ComfyUI did not pass the native H3 first/middle/last keyframe check. Update ComfyUI and restart before running this keyframe workflow; middle references will not be silently removed.']
+    return []
 
 
 def verify_runtime_requirements(job, link, workflow, manifest):

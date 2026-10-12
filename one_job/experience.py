@@ -269,7 +269,10 @@ def flow_worker(app, count, mode, digest, tokens):
                 require_inputs(app.job_dir, load_manifest(app.job_dir))
             failures = run_pending(app.job_dir, app.link, count=count, cancel=app.cancel_preparation,
                                    retry_failed=mode == 'retry', resume_only=mode == 'resume')
-            if failures: raise StepError('unclassified', f'{failures} item(s) failed. Review their messages, then retry failed items.')
+            if failures:
+                messages = [row.get('message') for row in records(app.job_dir) if row.get('code') and row.get('status') != 'done' and row.get('message')]
+                detail = '\n' + str(messages[-1])[:1200] if messages else ''
+                raise StepError('unclassified', f'{failures} item(s) failed. Review their messages, then retry failed items.' + detail)
             app.pending_flow = None
             app._progress({'phase': 'complete', 'message': 'Finished. Open Results to view your outputs.'})
     except StepError as error:

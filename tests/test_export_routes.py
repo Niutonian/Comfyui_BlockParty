@@ -45,6 +45,12 @@ class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
         from one_job.h3_compatibility import on_prompt
         self.assertEqual(self.prompt_handlers, [on_prompt])
 
+    async def test_h3_status_reports_loaded_compatibility_without_model_loads(self):
+        with patch('one_job.h3_compatibility.compatibility_status', return_value={'version': 2, 'registered': True, 'native_interior': True, 'guard_active': False}):
+            response = await self.client.get('/block_party/h3_status')
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())['version'], 2)
+
     async def test_preparation_failure_keeps_export_success_and_downloadable_zip(self):
         workflow = {'1': {'class_type': 'SaveImage', 'inputs': {'filename_prefix': 'out'}}}
         with patch('one_job.job.prepare_job', side_effect=StepError('comfy_not_found', 'host not ready')):

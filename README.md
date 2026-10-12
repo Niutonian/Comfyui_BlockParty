@@ -37,6 +37,8 @@ Exported width and height defaults are editable up to 4096 rather than capped at
 
 For older pinned H3 Keyframes nodes on newer ComfyUI, the Block Party ComfyUI extension verifies native first, middle, and last anchor positions before adapting the node's legacy capability check. It does not rewrite ComfyUI's layout or remove the middle reference. Restart ComfyUI after updating the extension, then use **Retry failed items** for an input set that failed this compatibility check.
 
+H3 dependency checks also verify the compatibility code loaded by the running ComfyUI process. Updating files or restarting runweb alone does not reload ComfyUI's Python extensions. Update the Block Party copy under `ComfyUI/custom_nodes`, fully stop and restart ComfyUI, and check dependencies again. `/block_party/h3_status` reports the loaded compatibility version and whether native interior anchors passed the CPU check; it does not load models or start a render.
+
 The workspace uses the robot-party header, a dark theme, and responsive controls. Machine preparation, recovery, and job management live in expandable sections so the main settings remain easy to scan.
 
 - **Save settings** saves edits without rendering. **Prepare and Run** saves, checks dependencies, and starts generation. **Run prepared job** uses the existing local preparation.

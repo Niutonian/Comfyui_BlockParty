@@ -49,5 +49,15 @@ class H3CompatibilityTests(unittest.TestCase):
             self.assertIs(h3.on_prompt(payload), payload)
             install.assert_not_called()
 
+    def test_guard_uses_execution_globals_when_class_module_is_wrapped(self):
+        old = Mock(return_value=(False, 'legacy failure'))
+        namespace = {'ensure_interior_keyframes': old}
+        exec('def build(self):\n    return ensure_interior_keyframes()\n', namespace)
+        cls = type('H3Keyframes', (), {'__module__': 'missing_wrapper_module', 'FUNCTION': 'build', 'build': namespace['build']})
+        with patch.object(h3, 'native_interior_supported', return_value=True):
+            self.assertTrue(h3.install_native_guard({'H3Keyframes': cls}))
+            self.assertTrue(cls().build()[0])
+            old.assert_not_called()
+
 
 if __name__ == '__main__': unittest.main()
