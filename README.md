@@ -75,7 +75,7 @@ python -m one_job prepare jobs/dot
 
 The easiest path is to import the ZIP into the library and choose **Prepare and Run**. You can also open an existing folder with `python -m one_job runweb jobs/<name>`. **Check dependencies** and the separate preparation controls remain available for reviewing setup without rendering. Projects review the plans for their stages before **Prepare and Run project**.
 
-![Block Party prompt editor showing individual scene text files, seed controls, and preparation options](docs/images/prompt-editor.png)
+![Updated Block Party workspace with the robot-party header, dark panels, seed controls, and editable scene prompts](docs/images/prompt-editor-v2.png)
 
 Authors enter direct HTTPS model and LoRA download URLs in the ComfyUI export dialog, along with **Public download**, **Hugging Face token**, or **Civitai API key**. Export records the local file's SHA256 and size, plus each custom node's repository and commit. Use a Hugging Face `/resolve/<revision>/<file>` URL or a Civitai `/api/download/models/<version>` URL, rather than a model web page. Prefer an immutable revision. Keys must never appear in URLs or shared manifests. Blank sources remain supported for manually installed models, but prevent automatic installation when those files are missing. Older jobs need their `models[].url` fields filled or a new export.
 
@@ -236,7 +236,7 @@ Use **Download ZIP** in the export dialog to save the archive through the browse
 
 If export does not show a ZIP path or the new download button, update the Block Party installation loaded by ComfyUI, restart ComfyUI, and hard-refresh its browser page. When `BLOCK_PARTY_ROOT` is set, jobs and share ZIPs are written under that folder. For a missing manifest, check that extraction did not create an extra folder level such as `jobs/my_job/my_job/manifest.json`; pass that actual folder path or move the inner job folder directly into `jobs/`.
 
-![ComfyUI export dialog with model download sources and controls for choosing editable workflow parameters](docs/images/export-dialog.png)
+![Current ComfyUI export dialog with model download sources and controls for choosing editable workflow parameters](docs/images/export-dialog-v2.png)
 
 Recipients install Block Party, extract the job folder into `jobs/`, start and link ComfyUI, then open `python -m one_job runweb jobs/<job-name>` to check and approve dependency installation. The CLI prepare command also supports provisioning.
 
@@ -244,7 +244,7 @@ Recipients install Block Party, extract the job folder into `jobs/`, start and l
 
 Project packages contain an ordered `project.json`, individual job contracts, prompt examples and caption assets. A single **Start project** runs dependency preparation, images, video clips, and fixed FFmpeg assembly. Earlier stages provide declared input slots to later jobs; a failed stage stops the chain. Existing completed job results are reused. Shared model/node pin conflicts require isolated profiles. Idle shared hosts unload models between stages; project-owned profiles stop between stages to release GPU memory.
 
-![Singularity project overview showing the images to video to assembly sequence and dependency review option](docs/images/project-chain.png)
+![Updated project workspace with the Block Party header, images to video to assembly sequence, progress, and troubleshooting controls](docs/images/project-chain-v2.png)
 
 ```powershell
 python -m one_job project create projects/my_film --jobs image_job video_job --duration 90 --clip-seconds 9 --captions jobs/video_job/captions
