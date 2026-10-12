@@ -150,6 +150,10 @@ def bind_inputs(root, step, steps):
             name = path.name if len(slots) == 1 else path.stem + '_' + binding['slot'].rsplit('_', 1)[1] + path.suffix
             destination = folder / safe_filename(name)
             assert_unlinked(root, destination, 'project input')
+            claimed = job / 'state/claimed' / destination.name
+            assert_unlinked(root, claimed, 'claimed project input')
+            if claimed.is_file() and sha256_file(claimed) == sha256_file(path):
+                continue
             if destination.exists() and sha256_file(destination) != sha256_file(path):
                 raise StepError('bad_input', 'downstream input differs from upstream output; use a fresh project')
             if not destination.exists(): shutil.copyfile(path, destination)
@@ -209,7 +213,7 @@ def assemble_video(root, step, steps, cancel=None):
     return final
 
 
-def run_project(root, link, digest, isolated=False, restart=False, tokens=None, cancel=None, prepare_only=False):
+def run_project(root, link, digest, isolated=False, restart=False, tokens=None, cancel=None, prepare_only=False, retry_failed=False):
     from one_job.provision import provision_job, plan_job
     from one_job.host import HostLink
     from one_job.lifecycle import start_server, stop_server
@@ -225,7 +229,9 @@ def run_project(root, link, digest, isolated=False, restart=False, tokens=None, 
         if plan['blocked']: raise StepError('missing_source', '; '.join(plan['blocked']))
         steps = {s['id']: s for s in project['steps']}
         items = {item['step']: item for item in plan['jobs']}
-        for step in project['steps']:
+        for step_index, step in enumerate(project['steps']):
+            from one_job.progress import emit
+            emit('project', message='Project stage: ' + step['id'], current=step_index, total=len(project['steps']))
             if cancel and cancel.is_set(): raise StepError('cancelled', 'project cancelled between steps')
             print('Project step:', step['id'], flush=True)
             for relative, expected in plan['assets'].items():
@@ -251,7 +257,12 @@ def run_project(root, link, digest, isolated=False, restart=False, tokens=None, 
                     provision_job(job, selected, current['digest'], tokens, cancel, restart)
                     if prepare_only: continue
                     bind_inputs(root, step, steps)
-                    if run_pending(job, selected, count=step.get('count')):
+                    if retry_failed and run_pending(job, selected, cancel=cancel, retry_failed=True):
+                        raise StepError('unclassified', 'Some retried items failed; downstream stages were not run')
+                    count = step.get('count')
+                    if count is not None:
+                        count = max(0, count - len(selected_outputs(job)))
+                    if count != 0 and run_pending(job, selected, count=count, cancel=cancel):
                         raise StepError('unclassified', 'job stage failed; downstream stages were not run')
                     if not selected_outputs(job): raise StepError('bad_input', 'job produced no completed outputs')
                     if not owned:

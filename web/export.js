@@ -407,7 +407,8 @@ function openDialog(workflow, rows) {
 	cancel.textContent = "Cancel";
 	const submit = document.createElement("button");
 	submit.type = "submit";
-	submit.textContent = "Export";
+	submit.textContent = "Check export readiness";
+	let reviewedPayload = null;
 	actions.append(cancel, submit);
 	panel.append(title, note, nameLabel, examplesLabel, sources, list, status, actions);
 	back.appendChild(panel);
@@ -440,17 +441,18 @@ function openDialog(workflow, rows) {
 			return;
 		}
 		submit.disabled = true;
-		status.textContent = "Exporting the job. Large models are hashed before the folder is written.";
+		const payload = JSON.stringify({ name, workflow, parameters, include_inputs: examples.checked,
+			model_sources: modelFields.filter(item => item.url.value.trim() || item.edited).map(item => ({
+				class_type: item.class_type, key: item.key, filename: item.filename,
+				url: item.url.value.trim(), auth: item.auth.value || null, sha256: item.sha256,
+			})) });
+		const preview = reviewedPayload !== payload;
+		status.textContent = preview ? "Checking export readiness. Large models are hashed before sharing." : "Creating your job folder and ZIP.";
 		try {
-			const response = await api.fetchApi("/block_party/export", {
+			const response = await api.fetchApi(preview ? "/block_party/export_preview" : "/block_party/export", {
 				method: "POST",
 				headers: { "Content-Type": "application/json", "X-Block-Party": "export" },
-				body: JSON.stringify({ name, workflow, parameters, include_inputs: examples.checked,
-					model_sources: modelFields.filter(item => item.url.value.trim() || item.edited).map(item => ({
-						class_type: item.class_type, key: item.key, filename: item.filename,
-						url: item.url.value.trim(), auth: item.auth.value || null,
-						sha256: item.sha256,
-					})) }),
+				body: payload,
 			});
 			let body = {};
 			try {
@@ -460,11 +462,30 @@ function openDialog(workflow, rows) {
 			}
 			if (!response.ok || !body.ok) {
 				submit.disabled = false;
-				status.textContent = body.message || "Export failed.";
+				status.textContent = body.message || (response.status === 404 ? "Update Block Party, restart ComfyUI, and reload this page to use export readiness checks." : "Export failed.");
+				return;
+			}
+			if (preview) {
+				const report = body.readiness;
+				if (!report) throw new Error("Missing readiness report. Restart ComfyUI and reload this page.");
+				reviewedPayload = payload;
+				status.style.whiteSpace = "pre-wrap";
+				status.textContent = [report.label, ...report.issues.map(item => item.message),
+					`Model download estimate: ${(report.download_bytes / 1073741824).toFixed(2)} GiB` + (report.unknown_sizes ? ` plus ${report.unknown_sizes} unknown size(s).` : "."),
+					`Required input slots: ${report.required_inputs.join("; ") || "none (text-only job)"}.`,
+					report.include_inputs ? "Existing supported input files will be included." : "Recipients provide their own input files.",
+					report.note].join("\n");
+				submit.textContent = report.ready ? "Create ZIP" : "Create ZIP with manual setup";
+				submit.disabled = false;
 				return;
 			}
 			const missing = body.missing_sources || [];
-			status.textContent = `Exported. Share ZIP: ${body.share_zip}` + (missing.length ? ` — ${missing.length} model(s) still need download URLs for automatic setup: ${missing.join(", ")}` : " — All model download sources supplied.");
+			if (!body.share_zip) {
+				submit.disabled = false;
+				status.textContent = "The server exported a folder but did not report a ZIP. Update Block Party, restart ComfyUI, and reload this browser page.";
+				return;
+			}
+			status.textContent = `Exported. Share ZIP: ${body.share_zip}` + (missing.length ? `; ${missing.length} model(s) still need download URLs for automatic setup: ${missing.join(", ")}` : "; All model download sources supplied.") + (body.preparation_warning ? `; ZIP saved, but local preparation needs attention: ${body.preparation_warning}` : "");
 			submit.hidden = true;
 			cancel.textContent = "Close";
 			const openShare = document.createElement("button");
@@ -477,16 +498,49 @@ function openDialog(workflow, rows) {
 					const result = await api.fetchApi("/block_party/open_share", {
 						method: "POST", headers: { "X-Block-Party": "export" },
 					});
-					if (!result.ok) notify("error", "Could not open the share folder. Use the ZIP path shown above.");
+					const opened = await result.json();
+					if (!result.ok || !opened.ok) notify("error", "Could not open the share folder. Use Download ZIP or copy the folder path.");
+					else notify("info", `${opened.message || "Requested the share folder."}\n${opened.folder || body.share_folder || body.share_zip}`);
 				} catch (error) { notify("error", "Could not open the share folder."); }
 			});
 			actions.appendChild(openShare);
+			actions.querySelector(".bp-copy-share")?.remove();
+			const copyFolder = document.createElement("button");
+			copyFolder.className = "bp-copy-share"; copyFolder.type = "button";
+			copyFolder.textContent = "Copy share folder path";
+			copyFolder.addEventListener("click", async () => {
+				const folder = body.share_folder || body.share_zip.replace(/[\\/][^\\/]+$/, "");
+				try { await navigator.clipboard.writeText(folder); notify("success", "Folder path copied. Paste it into your file manager."); }
+				catch (error) { notify("info", `Share folder: ${folder}`); }
+			});
+			actions.appendChild(copyFolder);
+			actions.querySelector(".bp-download-share")?.remove();
+			const download = document.createElement("button");
+			download.className = "bp-download-share";
+			download.type = "button";
+			download.textContent = "Download ZIP";
+			download.addEventListener("click", async () => {
+				download.disabled = true;
+				try {
+					const response = await api.fetchApi("/block_party/download_share", {
+						method: "POST", headers: { "Content-Type": "application/json", "X-Block-Party": "export" },
+						body: JSON.stringify({ name: body.name || name }),
+					});
+					if (!response.ok) throw new Error("Could not download ZIP. Use the share folder path above.");
+					const url = URL.createObjectURL(await response.blob());
+					const anchor = document.createElement("a");
+					anchor.href = url; anchor.download = `${body.name || name}.zip`;
+					anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+				} catch (error) { notify("error", error.message); }
+				finally { download.disabled = false; }
+			});
+			actions.appendChild(download);
 			const ready = body.prepared ? "Prepared." : "Run prepare in the launcher before dropping files.";
 			const exposed = body.parameters && body.parameters.length ? `Editable: ${body.parameters.join(", ")}.` : "";
 			notify("success", [body.job, `Share ZIP: ${body.share_zip}`, body.hint, exposed, ready].filter(Boolean).join("\n"));
 		} catch (error) {
 			submit.disabled = false;
-			status.textContent = "Export failed.";
+			status.textContent = error.message || "Export failed.";
 			console.error(error);
 		}
 	});

@@ -112,6 +112,8 @@ def credentials(one_shot=None):
 
 
 def plan_job(job_dir, link):
+    from one_job.progress import emit
+    emit('checking', message='Checking workflow contracts and installed dependencies')
     from one_job.job import load_manifest, workflow_file, load_workflow, check_contract, _verified_hash, _git_head, sha256_file
     manifest = load_manifest(job_dir)
     path = workflow_file(job_dir, manifest)
@@ -221,6 +223,7 @@ def open_download(url, tokens, offset=0, etag=None):
 
 
 def download_model(action, tokens, cancel=None):
+    from one_job.progress import emit
     destination = Path(action['destination'])
     anchor = destination.parent
     # Caller has already checked ancestors against the linked ComfyUI root.
@@ -249,6 +252,8 @@ def download_model(action, tokens, cancel=None):
                 if shutil.disk_usage(anchor).free < remaining + 16 * 1024**2:
                     raise StepError('disk_full', 'not enough space for the remaining model download')
                 digest, total, last = hashlib.sha256(), offset, time.monotonic()
+                started, started_bytes = last, offset
+                emit('downloading', message='Downloading ' + action['filename'], bytes_done=offset, bytes_total=action.get('size_bytes'), current=offset, total=action.get('size_bytes') or 0)
                 if offset:
                     print(f"resuming {action['filename']} at {offset // 1024**2} MiB", flush=True)
                     with temporary.open('rb') as prefix:
@@ -266,6 +271,7 @@ def download_model(action, tokens, cancel=None):
                     status = getattr(response, 'status', 200)
                     if offset and status == 200:
                         offset = total = 0
+                        started, started_bytes = time.monotonic(), 0
                         digest = hashlib.sha256()
                     elif status == 206:
                         match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', response.headers.get('Content-Range', ''))
@@ -291,7 +297,12 @@ def download_model(action, tokens, cancel=None):
                                 raise StepError('disk_full', 'not enough space for the model download')
                             output.write(chunk)
                             digest.update(chunk)
-                            if time.monotonic() - last > 5:
+                            if time.monotonic() - last > 1:
+                                speed = (total - started_bytes) / max(.01, time.monotonic() - started)
+                                expected = action.get('size_bytes') or (int(announced) + offset if announced else 0)
+                                emit('downloading', message='Downloading ' + action['filename'], bytes_done=total, bytes_total=expected,
+                                     bytes_per_second=speed, eta_seconds=max(0, expected-total)/speed if expected and speed else None,
+                                     current=total, total=expected)
                                 print(f"downloading {action['filename']}: {total // 1024**2} MiB", flush=True)
                                 last = time.monotonic()
                         output.flush()
@@ -338,6 +349,8 @@ def run_install(command, cwd, label):
 
 
 def install_node(action, link):
+    from one_job.progress import emit
+    emit('installing', message=f"Installing {action['name']} at {action['commit'][:12]}")
     from one_job.job import _git_head
     repository_url(action['git_url'])
     source_url(action['git_url'], network=True)
@@ -359,6 +372,7 @@ def install_node(action, link):
                 assert_unlinked(pack, Path(directory) / name, 'node repository file')
         requirements = pack / 'requirements.txt'
         if requirements.is_file():
+            emit('installing', message='Installing Python requirements for ' + action['name'])
             print(f"installing Python requirements for {action['name']}", flush=True)
             run_install([link.python, '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '-r', str(requirements)], pack, 'Python requirements')
         elif (pack / 'pyproject.toml').is_file() or (pack / 'setup.py').is_file():
@@ -450,6 +464,8 @@ def provision_job(job_dir, link, confirmed_digest, one_shot=None, cancel=None, r
         if restart and not server_is_comfy(link.url):
             from one_job.lifecycle import start_server
             start_server(link, cancel=cancel)
+        from one_job.progress import emit
+        emit('verifying', message='Verifying the installed workflow and model hashes')
         return prepare_job(job_dir, link)
     except OSError as error:
         code = 'disk_full' if error.errno == errno.ENOSPC else 'install_failed'

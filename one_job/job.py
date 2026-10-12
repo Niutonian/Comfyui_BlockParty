@@ -64,6 +64,7 @@ def load_manifest(job_dir: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         raise StepError("bad_input", f"manifest.json is not valid JSON: {error}") from error
+    if not isinstance(data, dict): raise StepError('bad_input', 'manifest.json must contain a JSON object')
     for key in ("workflows", "models"):
         if key not in data:
             raise StepError("bad_input", f"manifest is missing {key}")
@@ -795,13 +796,34 @@ def _running_prompt(job_dir: Path, path: Path | None) -> str | None:
 _last_notice: dict[str, str] = {}
 
 
-def run_pending(job_dir: Path, link, quiet_if_empty: bool = False, count: int | None = None) -> int:
+def run_pending(job_dir: Path, link, quiet_if_empty: bool = False, count: int | None = None,
+                cancel=None, retry_failed: bool = False, resume_only: bool = False) -> int:
+    from one_job.progress import emit
     require_prepared(job_dir, link)
     ensure_server(link)
     manifest = load_manifest(job_dir)
     workflow = load_workflow(workflow_file(job_dir, manifest))
     validate_overrides(manifest, read_overrides(job_dir))
-    if count is not None:
+    if retry_failed or resume_only:
+        from one_job.experience import records
+        selected = {r['name']: r for r in records(job_dir) if
+                    (r.get('status') == 'skipped' and r.get('code') if retry_failed else r.get('status') == 'running')}
+        def eligible(name):
+            record = read_status(job_dir, name)
+            return None if name in selected and retry_failed else record
+        candidates, missing = collect_sets(job_dir, manifest, eligible)
+        def primary(item):
+            if manifest['inputs']: return item['files'][manifest['inputs'][0]['name']].name
+            return item['path'].name if item.get('path') else item['stem']
+        sets = [item for item in candidates if primary(item) in selected]
+        if not manifest['inputs']:
+            present = {primary(item) for item in sets}
+            sets.extend({'stem': name, 'label': name, 'path': None} for name in selected if name.isdigit() and name not in present)
+        if retry_failed:
+            for item in sets:
+                if output_exists(job_dir, item['stem']):
+                    raise StepError('bad_input', 'A failed item has partial outputs. Inspect those files before retrying: ' + item['stem'])
+    elif count is not None:
         if manifest["inputs"]:
             raise StepError("bad_input", "count is for a job with no image or video. Drop files into input/ for this job.")
         if count < 1:
@@ -831,6 +853,8 @@ def run_pending(job_dir: Path, link, quiet_if_empty: bool = False, count: int | 
     check_contract(workflow, manifest, Path(link.comfy_root), Path(link.custom_nodes))
     failures = 0
     for index, item in enumerate(sets):
+        if cancel and cancel.is_set(): raise StepError('cancelled', 'Stopped before the next item; completed work was kept')
+        emit('rendering', message=f"Rendering {item['label']}", current=index, total=len(sets), item=item['label'])
         try:
             if index:
                 require_prepared(job_dir, link)
@@ -841,6 +865,7 @@ def run_pending(job_dir: Path, link, quiet_if_empty: bool = False, count: int | 
             failures += 1
             if error.code not in PER_FILE_CODES:
                 break
+        emit('rendering', message=f"Processed {index + 1} of {len(sets)} items", current=index + 1, total=len(sets), failures=failures)
     return failures
 
 

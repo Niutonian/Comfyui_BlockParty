@@ -46,6 +46,8 @@ def wait_ready(link, process=None, cancel=None, timeout=120):
 
 
 def start_server(link, arguments=None, cancel=None):
+    from one_job.progress import emit
+    emit('starting', message='Starting the linked ComfyUI and waiting for it to become ready')
     assert_loopback(link.url)
     from one_job.job import ensure_server
     if server_is_comfy(link.url):
@@ -72,6 +74,8 @@ def start_server(link, arguments=None, cancel=None):
 
 
 def restart_server(link, cancel=None):
+    from one_job.progress import emit
+    emit('restarting', message='Checking the linked host and its queue before restart')
     assert_loopback(link.url)
     from one_job.job import ensure_server
     parsed = urllib.parse.urlsplit(link.url)

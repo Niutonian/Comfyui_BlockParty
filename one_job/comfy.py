@@ -581,6 +581,9 @@ def wait_for_prompt(
             )
             now = time.time()
             if detail != last_detail or now - last_note >= 30:
+                from one_job.progress import emit
+                emit('rendering', message=detail, current=getattr(watch, 'value', 0) or 0,
+                     total=getattr(watch, 'maximum', 0) or 0, elapsed_seconds=int(now - started))
                 _print_wait(f"{detail}  {int(now - started)}s")
                 last_detail = detail
                 last_note = now

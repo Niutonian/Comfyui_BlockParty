@@ -9,6 +9,7 @@ state/
 .env
 downloads.env
 .block-party-staging/
+.block-party-imports/
 share/
 __pycache__/
 .venv/

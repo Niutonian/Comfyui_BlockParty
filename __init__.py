@@ -148,6 +148,7 @@ def _peer_is_local(remote: str | None) -> bool:
     return remote.rsplit("%", 1)[0] in _LOCAL_PEERS
 
 
+@PromptServer.instance.routes.post("/block_party/export_preview")
 @PromptServer.instance.routes.post("/block_party/export")
 async def export_job(request):
     if not export_request_allowed(request.remote, request.headers):
@@ -173,36 +174,49 @@ async def export_job(request):
         workflow = payload.get("workflow")
         if not isinstance(workflow, dict):
             raise StepError("bad_input", "workflow is missing")
+        from one_job.job import _verified_hash
         manifest = await asyncio.to_thread(build_manifest,
             workflow,
             _resolve_model,
             _resolve_pack,
-            sha256_file,
+            _verified_hash,
             name=name,
             parameters=payload.get("parameters", []),
             model_sources=payload.get("model_sources", []),
             saved_sources=await asyncio.to_thread(previous_sources, _jobs_root(), name, workflow),
         )
+        from one_job.readiness import export_readiness
+        readiness = export_readiness(manifest, include_inputs)
+        if request.path == '/block_party/export_preview':
+            return web.json_response({'ok': True, 'readiness': readiness})
         job = await asyncio.to_thread(write_job, _jobs_root(), name, workflow, manifest)
         archive = await asyncio.to_thread(write_share, _jobs_root(), name, workflow, manifest, include_inputs)
         prepared = False
+        preparation_warning = None
         link = load_link()
         if link is not None and Path(link.comfy_root).resolve() == Path(folder_paths.base_path).resolve():
             from one_job.job import prepare_job
-            await asyncio.to_thread(prepare_job, job, link)
-            prepared = True
+            try:
+                await asyncio.to_thread(prepare_job, job, link)
+                prepared = True
+            except (StepError, OSError) as error:
+                preparation_warning = str(error) if isinstance(error, StepError) else 'Automatic preparation failed. Run prepare on this machine.'
         return web.json_response(
             {
                 "ok": True,
                 "job": str(job),
                 "share_zip": str(archive),
+                "share_folder": str(archive.parent),
                 "prepared": prepared,
+                "preparation_warning": preparation_warning,
+                "name": name,
                 "hint": hint_for(manifest),
                 "inputs": manifest["inputs"],
                 "outputs": manifest["outputs"],
                 "models": [model["filename"] for model in manifest["models"]],
                 "parameters": [item["name"] for item in manifest["parameters"]],
                 "missing_sources": [f"{m['folder']}/{m['filename']}" for m in manifest['models'] if not m.get('url')],
+                "readiness": readiness,
             }
         )
     except StepError as error:
@@ -219,6 +233,25 @@ async def export_job(request):
         return web.json_response({"ok": False, "code": "bad_input", "message": "Could not write the export. Check folder permissions and available space."}, status=400)
 
 
+@PromptServer.instance.routes.post('/block_party/download_share')
+async def download_share(request):
+    if not export_request_allowed(request.remote, request.headers):
+        return web.json_response({'ok': False, 'message': 'local browser only'}, status=403)
+    try:
+        raw = await request.content.read(4097)
+        if len(raw) > 4096: raise StepError('bad_input', 'download request is too large')
+        payload = json.loads(raw)
+        if not isinstance(payload, dict): raise StepError('bad_input', 'invalid download request')
+        name = clean_name(payload.get('name') or '')
+        archive = _jobs_root().parent / 'share' / (name + '.zip')
+        from one_job.paths import assert_unlinked
+        assert_unlinked(_jobs_root().parent, archive, 'share ZIP')
+        if not archive.is_file(): raise StepError('bad_input', 'Export this job first to create its ZIP')
+        return web.FileResponse(archive, headers={'Content-Disposition': f'attachment; filename="{name}.zip"', 'Content-Type': 'application/zip'})
+    except (StepError, ValueError, OSError) as error:
+        return web.json_response({'ok': False, 'message': error.message if isinstance(error, StepError) else 'Could not download the ZIP'}, status=400)
+
+
 @PromptServer.instance.routes.post("/block_party/open_share")
 async def open_share(request):
     if not export_request_allowed(request.remote, request.headers):
@@ -230,10 +263,15 @@ async def open_share(request):
         if not folder.is_dir():
             raise StepError("bad_input", "Export a job first")
         if sys.platform == "win32":
-            os.startfile(str(folder))
+            # Embedded/server Python can accept startfile without opening a window.
+            # Invoke the Windows file manager with an argument list, never a shell.
+            explorer = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'explorer.exe'
+            subprocess.Popen([str(explorer), str(folder.resolve())],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(folder)])
-        return web.json_response({"ok": True})
+        return web.json_response({"ok": True, "folder": str(folder.resolve()),
+                                  "message": "Requested the share folder in the file manager. If no window appears, copy this path or use Download ZIP."})
     except (OSError, StepError):
         return web.json_response({"ok": False, "message": "Could not open the share folder"}, status=400)
 

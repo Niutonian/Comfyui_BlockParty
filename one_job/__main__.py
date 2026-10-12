@@ -118,9 +118,30 @@ def _report(error: StepError, manifest: dict | None) -> None:
     print("repair: " + ", ".join(repair_actions(manifest, error.code)))
 
 
+def resolve_job(value: str, allow_project: bool = False) -> Path:
+    """Keep explicit paths and accept exported job names from the local jobs folder."""
+    import os
+    from one_job.paths import single_segment, assert_unlinked
+    direct = Path(value)
+    if direct.is_absolute() or '/' in value or '\\' in value or direct.exists():
+        return direct
+    single_segment(value, 'job name')
+    root = Path(os.environ.get('BLOCK_PARTY_ROOT') or Path(__file__).resolve().parent.parent)
+    job = root / 'jobs' / value
+    assert_unlinked(root, job, 'job')
+    if (job / 'manifest.json').is_file():
+        return job
+    if allow_project:
+        project = root / 'projects' / value
+        assert_unlinked(root, project, 'project')
+        if (project / 'project.json').is_file(): return project
+    raise StepError('bad_input', f'Job {value} was not found. Extract its ZIP into {root / "jobs"}, or pass the full path to the folder containing manifest.json.')
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="one_job")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser('library', help='open the job library, import ZIPs, and set up this machine')
     sub.add_parser("mcp", help="serve local job controls over MCP stdio (requires requirements-mcp.txt)")
     sub.add_parser("credentials", help="create or locate the local downloads.env template; never prints keys")
     project = sub.add_parser('project', help='create, export, prepare or run a portable multi-job project')
@@ -155,9 +176,19 @@ def main(argv: list[str] | None = None) -> int:
     parameters.add_argument("rest", nargs=argparse.REMAINDER)
 
     runweb = sub.add_parser("runweb", help="edit parameters in a browser, then start runs")
-    runweb.add_argument("job")
+    runweb.add_argument("job", nargs='?', help='optional job name or folder; omit to open the library')
 
-    args = parser.parse_args(argv)
+    export = sub.add_parser('export', help='create a share ZIP from an existing exported job folder')
+    export.add_argument('job')
+    export.add_argument('--include-inputs', action='store_true', help='include supported example inputs and prompt files')
+
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(arguments or ['library'])
+    if args.command == 'library' or (args.command == 'runweb' and not args.job):
+        from one_job.library import serve_library
+        try: serve_library()
+        except KeyboardInterrupt: return 130
+        return 0
     if args.command == "mcp":
         from one_job.mcp_control import main as mcp_main
         mcp_main()
@@ -213,16 +244,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "link":
             cmd_link(args.path)
             return 0
+        job_dir = resolve_job(args.job, allow_project=args.command == 'runweb')
+        if (job_dir / 'manifest.json').is_file():
+            manifest = load_manifest(job_dir)
         if args.command == "parameters":
-            cmd_parameters(Path(args.job), list(args.rest or []))
+            cmd_parameters(job_dir, list(args.rest or []))
             return 0
         if args.command == "runweb":
-            serve(Path(args.job), load_link())
+            serve(job_dir, load_link())
+            return 0
+        if args.command == 'export':
+            from one_job.export_job import write_share
+            from one_job.job import workflow_file, load_workflow
+            from one_job.provision import validate_sources
+            validate_sources(manifest['models'])
+            from one_job.readiness import export_readiness
+            report = export_readiness(manifest, args.include_inputs)
+            print(report['label'])
+            for issue in report['issues']: print(issue['message'])
+            print(write_share(job_dir.parent, job_dir.name, load_workflow(workflow_file(job_dir, manifest)), manifest, args.include_inputs))
             return 0
         host = load_link()
         if host is None:
             raise StepError("comfy_not_found", "no saved link; run link first")
-        job_dir = Path(args.job)
         from one_job.environments import environment_link, create_environment
         original = host
         host = environment_link(job_dir, original)

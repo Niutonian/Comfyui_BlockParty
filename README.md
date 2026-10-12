@@ -12,6 +12,35 @@ A job is a folder. Drop a picture in `input/`, and its result comes back in `out
 
 The launcher is still `python -m one_job`. Run it from this project folder.
 
+Commands accept an exported job name such as `prepare my_job` or `runweb my_job`, which resolves to `jobs/my_job`. Explicit folder paths still work. Import received ZIPs from the browser library, or extract their job folders directly under `jobs/`. A job is not automatically fetched from GitHub by name.
+
+## Start from your library
+
+```powershell
+python -m one_job
+```
+
+This opens the local browser library. `python -m one_job library` and `python -m one_job runweb` open the same page.
+
+1. Open **Machine setup**, find your existing ComfyUI installation or enter its folder, and save the connection. Compatibility checks report Python, pip, ComfyUI connectivity, reported devices, Git, and video tools. They do not render a test image or guarantee that a particular workflow fits your GPU.
+2. Drop a shared ZIP onto the library. Block Party validates it and imports the job or project, including bundled example inputs. Name collisions get a new suffix, so existing work is preserved. Imports do not install dependencies or execute workflows.
+3. Open a job, add inputs or edit its prompts, and choose **Prepare and Run**. Review and confirm any missing dependency downloads or installations. A ready job proceeds directly to rendering. The verified idle ComfyUI host can be started or restarted as needed.
+4. Open **Results** to browse images, play supported video/audio, download files and saved API workflows, or reuse a compatible result as a new job input.
+
+Library cards show descriptions, the latest image result, completion counts, and setup or running status. Ready reflects the last local verification; execution rechecks dependencies. Your jobs, projects, inputs, and results remain local and are ignored by Git.
+
+The workspace uses the robot-party header, a dark theme, and responsive controls. Machine preparation, recovery, and job management live in expandable sections so the main settings remain easy to scan.
+
+- **Save settings** saves edits without rendering. **Prepare and Run** saves, checks dependencies, and starts generation. **Run prepared job** uses the existing local preparation.
+- **Save a prompt preset** remembers exposed settings and editable prompt files. Apply a preset without starting a run. Presets are local to each job; matching prompt filenames are required, and saving the same preset name updates it.
+- **Manage job** lets you edit its local display name or create an independent duplicate. Duplicates keep saved parameter settings and can optionally include pending inputs. They get a unique folder and fresh preparation; run history, results, and approvals are excluded. Renaming the display name does not rename the folder or change the shared workflow contract.
+- **Recently opened** on the library shows your last six jobs or projects, including after a restart.
+- **Troubleshooting** copies or downloads a report with version information, host details, dependency failures, item errors, and recent Block Party logs. Known credentials and credential-bearing log lines are redacted; prompts, workflows, and credential files are excluded. Review local paths and log text before sharing. If clipboard access is unavailable, select the report text or download it.
+
+Progress shows the current operation, completed and failed items, and download speed and estimated time remaining when the server provides a size. **Retry failed items** targets failed items and preserves completed results. **Resume unfinished work** recovers items recorded as running. Cancellation stops between items; an already queued GPU render is allowed to finish. Partial model downloads remain available for resuming. Retry refuses a failed item with partial output files until you inspect those files.
+
+The library accepts ZIP uploads up to 512 MiB, with bounded extraction and checks for unsafe paths, links, credentials, and bundled execution state. Share contracts and example inputs, not models or local run state.
+
 ## Install on a machine that already has ComfyUI
 
 Copy this folder to the other machine. The folder name can be `Comfyui_BlockParty`. The installer does not install ComfyUI, download models, or start the server. It links `custom_nodes/Comfyui_BlockParty` at this folder.
@@ -44,7 +73,7 @@ python -m one_job prepare jobs/dot
 
 ## Preparing a received job
 
-The easiest path is `python -m one_job runweb jobs/<name>`. Click **Check dependencies**, review the download sources and node revisions, then **Confirm downloads and installs / Prepare**. Progress appears in the page. Once prepared, use **Run**.
+The easiest path is to import the ZIP into the library and choose **Prepare and Run**. You can also open an existing folder with `python -m one_job runweb jobs/<name>`. **Check dependencies** and the separate preparation controls remain available for reviewing setup without rendering. Projects review the plans for their stages before **Prepare and Run project**.
 
 ![Block Party prompt editor showing individual scene text files, seed controls, and preparation options](docs/images/prompt-editor.png)
 
@@ -198,6 +227,14 @@ That queues four runs, named `1`, `2`, `3`, and `4`. A later `--count 2` continu
 ## Where a job comes from
 
 Export also creates `share/<job-name>.zip` alongside `jobs/`. The ZIP contains a job folder with the API workflow, dependency manifest, generated README, and empty input/output folders. **Include example inputs** optionally adds supported media and `.txt` prompts currently in that job's `input/` folder; it does not copy claimed inputs from previous runs. Review those files before including them. Run state, previous outputs, model weights, node code and machine settings are excluded. Re-exporting a name replaces its ZIP. The success dialog has **Open share folder**.
+
+Choose **Check export readiness** before creating the ZIP. The report lists missing model sources or node pins, estimated model download size, and required input slots. **Create ZIP** then writes the package; incomplete source information is labeled as requiring manual setup. The report does not test provider access or GPU compatibility.
+
+Use **Download ZIP** in the export dialog to save the archive through the browser. Export remains successful when the archive is saved but automatic local preparation fails; the dialog reports that preparation separately. To package an existing job folder from the terminal, use `python -m one_job export my_job`, optionally with `--include-inputs`. This does not need a running ComfyUI.
+
+**Open share folder** asks the file manager on the ComfyUI host to open that folder. If ComfyUI runs without an interactive desktop, a window may not appear. Use **Copy share folder path** to open it yourself, or **Download ZIP** to save the archive directly.
+
+If export does not show a ZIP path or the new download button, update the Block Party installation loaded by ComfyUI, restart ComfyUI, and hard-refresh its browser page. When `BLOCK_PARTY_ROOT` is set, jobs and share ZIPs are written under that folder. For a missing manifest, check that extraction did not create an extra folder level such as `jobs/my_job/my_job/manifest.json`; pass that actual folder path or move the inner job folder directly into `jobs/`.
 
 ![ComfyUI export dialog with model download sources and controls for choosing editable workflow parameters](docs/images/export-dialog.png)
 

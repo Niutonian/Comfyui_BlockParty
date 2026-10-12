@@ -209,11 +209,17 @@ class App:
         self.cancel_preparation = threading.Event()
         self.preparation_active = False
         self.original_link = link
+        self.base_path = ''
+        self.progress = {}
+        self.pending_flow = None
+        self.operation_owned = False
 
     def get(self, handler) -> None:
         if not self._allowed(handler):
             return
         path = urllib.parse.urlparse(handler.path).path
+        from one_job.experience import get_extra
+        if get_extra(self, handler, path): return
         if path == "/status":
             self._send(handler, 200, json.dumps(self._status()).encode("utf-8"), "application/json; charset=utf-8")
             return
@@ -237,10 +243,16 @@ class App:
         if path not in {"/", "/index.html"}:
             self._send(handler, 404, b"not found", "text/plain; charset=utf-8")
             return
+        from one_job.everyday import touch_recent
+        touch_recent(self.job_dir)
         self._send(handler, 200, self._render(""), "text/html; charset=utf-8")
 
     def post(self, handler) -> None:
         with self.submit_lock:
+            if urllib.parse.urlparse(handler.path).path == '/upload':
+                from one_job.experience import upload
+                upload(self, handler)
+                return
             self._post(handler)
 
     def _post(self, handler) -> None:
@@ -254,19 +266,25 @@ class App:
         if not self._token_ok(fields):
             self._send(handler, 403, b"open this page from the form", "text/plain; charset=utf-8")
             return
-        if path not in {"/save", "/run", "/review", "/prepare", "/isolate", "/restart", "/cancel"}:
+        if path not in {"/save", "/run", "/review", "/prepare", "/isolate", "/restart", "/cancel", '/prepare_run', '/resume', '/retry_failed', '/reuse', '/open_results', '/rename', '/duplicate', '/preset_save', '/preset_load', '/preset_delete'}:
             self._send(handler, 404, b"not found", "text/plain; charset=utf-8")
             return
         try:
+            from one_job.experience import post_extra, start_flow
+            if post_extra(self, handler, path, fields): return
             if path == '/cancel':
                 if not self.preparation_active:
                     raise StepError('bad_input', 'no preparation is running')
                 self.cancel_preparation.set()
-                self._send(handler, 200, self._render('Cancellation requested; retained downloads can resume.'), 'text/html; charset=utf-8')
+                self._redirect(handler)
                 return
             with self.lock:
                 if self.running:
                     raise StepError("bad_input", "a run is already going; wait before editing its inputs")
+            if path in {'/prepare_run', '/resume', '/retry_failed'}:
+                start_flow(self, fields, {'/prepare_run': 'run', '/resume': 'resume', '/retry_failed': 'retry'}[path])
+                self._redirect(handler)
+                return
             if path in {'/review', '/prepare', '/isolate', '/restart'}:
                 if self.link is None:
                     raise StepError('comfy_not_found', 'no saved link; run link first')
@@ -276,7 +294,7 @@ class App:
                 tokens = {provider: _one(fields, provider + '_token') or '' for provider in ('huggingface', 'civitai')}
                 mode = 'isolate' if path == '/isolate' else 'restart' if path == '/restart' else path == '/review'
                 self._start_preparation(mode, digest, tokens, _one(fields, 'restart') == '1')
-                self._send(handler, 200, self._render(''), 'text/html; charset=utf-8')
+                self._redirect(handler)
                 return
             manifest = load_manifest(self.job_dir)
             count = None
@@ -285,14 +303,27 @@ class App:
             save_fields(self.job_dir, manifest, fields)
             if path == "/run":
                 self._start(count)
+            else:
+                self.notice = 'Settings saved. No run was started.'
         except StepError as error:
             self._send(handler, 400, self._render(f"{error.code}: {error.message}"), "text/html; charset=utf-8")
             return
-        self._send(handler, 200, self._render(""), "text/html; charset=utf-8")
+        self._redirect(handler)
+
+    def _redirect(self, handler, path='/'):
+        # A refresh must never repeat a run, install, or input mutation.
+        handler.send_response(303)
+        handler.send_header('Location', self.base_path + path)
+        handler.send_header('Content-Length', '0')
+        handler.send_header('Cache-Control', 'no-store')
+        handler.end_headers()
 
     def _render(self, error: str) -> bytes:
         try:
-            return self._page(error).encode("utf-8")
+            from one_job.experience import mount_html
+            from one_job.ui import STYLE
+            html = self._page(error).replace('</head>', '<meta name="viewport" content="width=device-width,initial-scale=1"><style>' + STYLE + '</style></head>')
+            return mount_html(self, html).encode("utf-8")
         except StepError as failure:
             message = f"{failure.code}: {failure.message}"
             page = f"<!DOCTYPE html><html><body><p>{_esc(message)}</p></body></html>"
@@ -302,6 +333,8 @@ class App:
         with self.lock:
             if self.running:
                 raise StepError("bad_input", "a run is already going")
+            from one_job.experience import begin
+            begin(self)
             self.running = True
             self.error = ""
             self.lines = []
@@ -311,12 +344,17 @@ class App:
         with self.lock:
             if self.running:
                 raise StepError('bad_input', 'another operation is running')
+            from one_job.experience import begin
+            begin(self)
             self.running, self.error, self.lines = True, '', []
             self.cancel_preparation.clear()
             self.preparation_active = True
         threading.Thread(target=self._prepare_worker, args=(review, digest, tokens, restart), daemon=True).start()
 
     def _prepare_worker(self, review, digest, tokens, restart=False):
+        self.private_tokens = tokens
+        from one_job.progress import reporting
+        context = reporting(self._progress); context.__enter__()
         previous = sys.stdout
         sys.stdout = _Tee(previous, self._add_line)
         try:
@@ -348,13 +386,20 @@ class App:
         except Exception:
             with self.lock: self.error = 'Preparation failed. Review dependencies and retry.'
         finally:
+            from one_job.diagnostics import clean_logs
+            clean_logs(self, tokens)
             tokens.clear()
             sys.stdout = previous
             with self.lock:
                 self.running = False
                 self.preparation_active = False
+            context.__exit__(None, None, None)
+            from one_job.experience import finish
+            finish(self)
 
     def _worker(self, count: int | None) -> None:
+        from one_job.progress import reporting
+        context = reporting(self._progress); context.__enter__()
         previous = sys.stdout
         sys.stdout = _Tee(previous, self._add_line)
         try:
@@ -371,6 +416,13 @@ class App:
             sys.stdout = previous
             with self.lock:
                 self.running = False
+            context.__exit__(None, None, None)
+            from one_job.experience import finish
+            finish(self)
+
+    def _progress(self, values):
+        with self.lock:
+            self.progress = dict(values)
 
     def _add_line(self, line: str) -> None:
         with self.lock:
@@ -378,14 +430,20 @@ class App:
             del self.lines[:-200]
 
     def _status(self) -> dict:
+        from one_job.experience import counts
+        try: item_counts = counts(self.job_dir)
+        except (StepError, OSError, ValueError): item_counts = {}
         with self.lock:
             return {
                 "running": self.running,
                 "error": self.error,
                 "log": "\n".join(self.lines),
+                "progress": dict(self.progress),
+                "counts": item_counts,
             }
 
     def _page(self, error: str) -> str:
+        from one_job.everyday import display_name, read_local
         manifest = load_manifest(self.job_dir)
         overrides = read_overrides(self.job_dir)
         media = bool(manifest["inputs"])
@@ -408,16 +466,22 @@ class App:
             "pre{white-space:pre-wrap;background:#f3f3f3;padding:.8rem}",
             "</style></head>",
             f"<body data-running=\"{'1' if status['running'] else '0'}\">",
-            f"<h1>{_esc(self.job_dir.name)}</h1>",
+            '<div class="workspace-title"><div><p class="eyebrow">Job workspace</p>' + f'<h1>{_esc(display_name(self.job_dir, manifest.get("name")))}</h1></div><a class="button secondary" href="/gallery">View results</a></div>',
         ]
         if shown_error:
             parts.append(f"<p class=\"error\">{_esc(shown_error)}</p>")
-        parts.append('<h2>Prepare this machine</h2><form method="post" action="/review">')
+        if getattr(self, 'notice', ''):
+            parts.append('<p class="notice" role="status">' + _esc(self.notice) + '</p>')
+            self.notice = ''
+        from one_job.experience import progress_markup
+        parts.append('<div class="panel">' + progress_markup() + '</div>')
+        parts.append('<details class="panel"' + (' open' if self.dependency_plan or self.preparation_active else '') + '><summary>Machine preparation</summary><p class="subtle">Prepare and Run handles setup for you. Use these controls to inspect dependencies or manage the host separately.</p><div class="button-row"><form method="post" action="/review">')
         parts.append(f'<input type="hidden" name="token" value="{_esc(self.token)}">')
         parts.append('<button type="submit">Check dependencies</button></form>')
-        for action, label in (('/isolate', 'Use isolated environment'), ('/restart', 'Restart linked ComfyUI and continue'), ('/cancel', 'Cancel preparation')):
+        for action, label in (('/isolate', 'Use isolated environment'), ('/restart', 'Restart linked ComfyUI and continue'), ('/cancel', 'Cancel remaining work')):
             if action == '/cancel' and not self.preparation_active: continue
-            parts.append(f'<form method="post" action="{action}"><input type="hidden" name="token" value="{_esc(self.token)}"><button>{label}</button></form>')
+            parts.append(f'<form method="post" action="{action}"><input type="hidden" name="token" value="{_esc(self.token)}"><button class="secondary">{label}</button></form>')
+        parts.append('</div>')
         if self.link and self.original_link and getattr(self.link, 'comfy_root', None) != getattr(self.original_link, 'comfy_root', None):
             parts.append(f'<p class="hint">Isolated host: {_esc(self.link.comfy_root)}</p>')
         if self.dependency_plan:
@@ -434,8 +498,16 @@ class App:
                     parts.append('<label>Civitai API key (optional if stored locally)<input type="password" name="civitai_token" autocomplete="new-password"></label>')
                 parts.append('<p class="hint">Keys are used for this preparation only and are not saved. Node installs may execute package build code and change ComfyUI’s Python environment. New nodes require a ComfyUI restart.</p>')
                 parts.append('<label><input type="checkbox" name="restart" value="1"> Start or restart the verified idle ComfyUI and continue automatically</label>')
+                if self.pending_flow is not None:
+                    parts.append('<p>Continue approves this plan, starts or restarts the verified idle host as needed, then runs the selected items.</p><button type="submit" formaction="/prepare_run">Confirm setup and run</button>')
                 parts.append('<button type="submit">Confirm downloads and installs / Prepare</button></form>')
-        parts.append("<form method=\"post\" action=\"/save\">")
+        parts.append('</details>')
+        presets = read_local(self.job_dir, 'presets.json')
+        if presets:
+            parts.append('<section class="panel"><h2>Prompt presets</h2><form method="post" action="/preset_load" class="preset-row">' + f'<input type="hidden" name="token" value="{_esc(self.token)}">' + '<label>Saved preset<select name="preset_name">')
+            parts.extend('<option>' + _esc(name) + '</option>' for name in sorted(presets))
+            parts.append('</select></label><button class="secondary">Apply preset</button><button class="secondary" formaction="/preset_delete">Delete preset</button></form><p class="subtle">Applying a preset updates settings and matching prompt files. It does not start a run.</p></section>')
+        parts.append('<form class="panel" method="post" action="/save">')
         parts.append(f"<input type=\"hidden\" name=\"token\" value=\"{_esc(self.token)}\">")
         parts.append("<h2>Parameters</h2>")
         specs = manifest.get("parameters") or []
@@ -474,9 +546,18 @@ class App:
             parts.append(
                 f"<input id=\"runs\" name=\"runs\" type=\"number\" min=\"1\" max=\"{_MAX_RUNS}\" step=\"1\" value=\"1\" required>"
             )
-        parts.append("<button type=\"submit\">Save</button>")
-        parts.append("<button type=\"submit\" formaction=\"/run\">Run</button>")
+        parts.append('<details><summary>Save a prompt preset</summary><div class="preset-row"><label>Preset name<input type="text" name="preset_name" maxlength="100" placeholder="e.g. Soft cinematic light"></label><button class="secondary" formaction="/preset_save">Save preset</button></div><p class="subtle">Includes the settings and editable prompt files above. Using an existing name updates that preset.</p></details>')
+        parts.append('<div class="run-actions"><div class="button-row"><button class="secondary" type="submit">Save settings</button>')
+        parts.append('<button class="primary" type="submit" formaction="/prepare_run">Prepare and Run</button>')
+        parts.append('<button class="secondary" type="submit" formaction="/run">Run prepared job</button></div><p class="subtle">Save settings keeps your edits. Prepare and Run saves your edits, checks dependencies, and starts generation.</p></div>')
         parts.append("</form>")
+        parts.append('<p>Prepare and Run checks this machine, asks you to approve missing dependencies, then starts the job. A running render finishes before cancellation stops later items.</p>')
+        parts.append('<details class="panel"><summary>Recovery controls</summary><div class="button-row">')
+        for action, label in (('/resume', 'Resume unfinished work'), ('/retry_failed', 'Retry failed items')):
+            parts.append(f'<form method="post" action="{action}"><input type="hidden" name="token" value="{_esc(self.token)}"><button class="secondary">{label}</button></form>')
+        parts.append('</div></details>')
+        parts.append('<section class="drop" id="input-drop"><h2>Add inputs</h2><p>Drop images, videos or prompt text files here. Existing filenames are never replaced.</p><input type="file" id="input-files" aria-label="Add input files" multiple><p id="upload-message" role="status"></p></section>')
+        parts.append('<script>const uploadToken=' + json.dumps(self.token) + ';async function addInputs(files){const message=document.getElementById("upload-message");try{for(const file of files){message.textContent="Adding "+file.name;const r=await fetch("/upload?name="+encodeURIComponent(file.name),{method:"POST",headers:{"X-Block-Party-Token":uploadToken},body:file});const d=await r.json();if(!r.ok)throw new Error(d.message||"Upload failed");}location.reload()}catch(e){message.textContent=e.message;}}document.getElementById("input-files").onchange=e=>addInputs(e.target.files);const drop=document.getElementById("input-drop");drop.ondragover=e=>{e.preventDefault();drop.classList.add("over")};drop.ondragleave=()=>drop.classList.remove("over");drop.ondrop=e=>{e.preventDefault();drop.classList.remove("over");addInputs(e.dataTransfer.files)};</script>')
         snapshots = self.job_dir / "state" / "workflows"
         assert_unlinked(self.job_dir, snapshots, "saved workflows")
         if snapshots.is_dir():
@@ -488,13 +569,21 @@ class App:
                     href = "/workflow?name=" + urllib.parse.quote(snapshot.name, safe="")
                     parts.append(f'<li><a href="{_esc(href)}" download="{_esc(snapshot.name)}">{_esc(snapshot.name)}</a></li>')
                 parts.append("</ul>")
-        parts.append("<h2>Queue</h2>")
-        parts.append(f"<pre id=\"log\">{_esc(status['log'])}</pre>")
+        parts.append('<details class="panel"' + (' open' if status['running'] or shown_error else '') + '><summary>Activity log</summary>')
+        parts.append(f"<pre id=\"log\">{_esc(status['log'])}</pre></details>")
+        token = f'<input type="hidden" name="token" value="{_esc(self.token)}">'
+        parts.append('<details class="panel"><summary>Manage job</summary><form method="post" action="/rename">' + token + '<label>Display name<input type="text" name="display_name" maxlength="100" required value="' + _esc(display_name(self.job_dir, manifest.get('name'))) + '"></label><button class="secondary">Save name</button><p class="subtle">Changes the name in this library. The folder and shared workflow stay the same.</p></form>')
+        parts.append('<form method="post" action="/duplicate">' + token + '<label>New job name<input type="text" name="copy_name" maxlength="100" required value="' + _esc(str(display_name(self.job_dir, manifest.get('name')))[:90] + ' copy') + '"></label><label><input type="checkbox" name="include_inputs" value="1"> Include pending input files</label><button class="secondary">Duplicate job</button><p class="subtle">Creates an independent job with saved parameter settings. Outputs, approvals, and run history stay here.</p></form></details>')
+        from one_job.diagnostics import controls
+        parts.append(controls())
+        from one_job.experience import PROGRESS_JS
+        initial_progress = json.dumps({'progress': status['progress'], 'counts': status['counts']}).replace('<', '\\u003c')
+        parts.append('<script>' + PROGRESS_JS + 'showProgress(' + initial_progress + ');</script>')
         parts.append(
             "<script>const log=document.getElementById('log');"
             "async function poll(){try{const response=await fetch('/status');"
             "if(!response.ok)return;const data=await response.json();"
-            "log.textContent=data.log||'';"
+            "log.textContent=data.log||'';showProgress(data);"
             "if(data.error){log.textContent=(data.log?data.log+'\\n':'')+data.error}"
             "if(data.running)setTimeout(poll,1000);else location.reload()}catch(e){}}"
             "if(document.body.dataset.running==='1')poll();</script>"
@@ -589,6 +678,11 @@ def make_handler(app: App):
 
 
 def serve(job_dir: Path, link, open_browser: bool = True) -> None:
+    absolute = job_dir.absolute()
+    if absolute.parent.name in {'jobs', 'projects'} and absolute.parent.parent.name != 'projects':
+        from one_job.library import serve_library
+        return serve_library(absolute.parent.parent, link, open_browser,
+                             '/' + absolute.parent.name + '/' + urllib.parse.quote(absolute.name, safe='') + '/')
     if (job_dir / 'project.json').is_file():
         from one_job.project import load_project
         from one_job.project_web import ProjectApp
