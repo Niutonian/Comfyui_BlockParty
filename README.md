@@ -118,6 +118,25 @@ Use workflows and custom nodes you trust. A pinned node is still Python code run
 
 H3 multishot exports support `H3ModelLoaderAny`, `H3ClipLoaderAny`, and the four slots of `H3LoraStack`. GGUF variants also include the pinned ComfyUI-GGUF pack that H3 calls internally. For a GGUF H3 text encoder, select a specific `mmproj_name` instead of `(auto)` before exporting. This makes the required vision sidecar an explicit, hash-verified dependency in the shared job. Safetensors encoders do not need that sidecar selection.
 
+The dependency audit also covers the following loaders:
+
+| Workflow | Dependencies captured |
+| --- | --- |
+| Native LTX | Checkpoint or diffusion model, combined `LTXAVTextEncoderLoader` encoder/checkpoint pair, audio and video VAEs, LoRAs, latent upscalers |
+| Lightricks LTX nodes | Low-VRAM checkpoint/audio-VAE/upscale loaders, IC-LoRAs, Q8 LoRAs, saved conditioning files, pinned node pack and its Python requirements |
+| WanVideoWrapper | Diffusion/GGUF models, T5/cached text encoders, CLIP encoders in `clip_vision`, VAEs/tiny VAEs, VACE/extra weights, single and multi-LoRA selectors |
+| Other core loaders | Image-only checkpoints, LoRA hooks and bypass loaders, video tiny-VAEs in `vae_approx`, alongside the existing Flux, SD, GGUF, and other fixed-file loaders |
+
+Native `LoadAudio` becomes an `audio_0` input slot, so LTX audio-to-video jobs can include example audio and upload a different audio input on the receiving machine. Playback depends on the browser's supported formats. Model selectors remain fixed even when their current value is `None`; they cannot become editable parameters that introduce an undeclared model.
+
+Preparation checks the running ComfyUI node registry as well as the installed source and Git revision. A pack that failed to import is not treated as ready. Installer failures retain a redacted log excerpt to explain missing packages or incompatible builds. After this update, prepare existing jobs once again; **Prepare and Run** does this automatically and reuses matching models.
+
+Optional LTX Q8 kernels and selected Wan SageAttention modes are checked using the linked ComfyUI Python, including import failures. Export reports flag these additional requirements, and preparation stops before downloads when they are unavailable. Compiled kernels require a build matching Python, PyTorch, CUDA, and hardware; Block Party does not guess a GPU wheel. Use compatible kernels or a workflow without those optional patches, such as Wan's `sdpa` mode. These checks do not replace a real GPU render or guarantee sufficient VRAM.
+
+Folder-based `LTXVGemmaCLIPModelLoader` exports are not supported yet: they require every Gemma shard plus tokenizer and configuration assets. Use a compatible single-file encoder with the native LTX loader for automatic sharing. Implicit image tiny-VAE encoder/decoder pairs, unsupported structured model selectors, and `DownloadAndLoad...` nodes also stop export instead of silently omitting files. A dedicated adapter is required for a new loader that manages additional assets internally.
+
+Model lookup respects preferred YAML paths and the `clip`/`unet` aliases. Existing verified files in external shared libraries are reused. New downloads are published inside the linked ComfyUI installation rather than written into an external default library.
+
 Uploads use a unique `one-job/<id>/` input folder and never request overwrite. Those uploaded files are retained so queued or resumed jobs can still read them. Individual uploads and downloaded responses are limited to 128 MB; text prompts are limited to 1 MB. The launcher reports an error for larger files.
 
 The listener must be identifiable as the linked ComfyUI at the configured address and port. Windows uses process/socket inspection; Linux and macOS also require `lsof` and process visibility. If identity cannot be established, the launcher stops. Export is restricted to the local, same-origin ComfyUI browser page, without proxy-forwarding headers. Do not expose the export route through a reverse proxy. Restart ComfyUI and reload its browser page after updating this extension.

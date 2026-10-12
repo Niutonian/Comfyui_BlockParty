@@ -21,11 +21,13 @@ VIDEO_LOADERS = {
     "VHS_LoadVideo": "video",
     "VHS_LoadVideoPath": "video",
 }
+AUDIO_LOADERS = {"LoadAudio": "audio"}
 IMAGE_SAVERS = ("SaveImage",)
 VIDEO_SAVERS = ("SaveVideo", "VHS_VideoCombine")
 
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"]
 VIDEO_EXTENSIONS = [".mp4", ".webm", ".mkv", ".mov", ".avi", ".gif"]
+AUDIO_EXTENSIONS = [".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus", ".aiff", ".aif"]
 MODEL_EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx", ".sft"}
 _INDEXED = re.compile(r"^(.+)_(\d+)$")
 
@@ -35,6 +37,8 @@ _INDEXED = re.compile(r"^(.+)_(\d+)$")
 _MODEL_LOADERS: dict[str, dict[str, str]] = {
     "CheckpointLoader": {"ckpt_name": "checkpoints"},
     "CheckpointLoaderSimple": {"ckpt_name": "checkpoints"},
+    "ImageOnlyCheckpointLoader": {"ckpt_name": "checkpoints"},
+    "LowVRAMCheckpointLoader": {"ckpt_name": "checkpoints"},
     "unCLIPCheckpointLoader": {"ckpt_name": "checkpoints"},
     "UNETLoader": {"unet_name": "diffusion_models"},
     "UnetLoaderGGUF": {"unet_name": "diffusion_models"},
@@ -42,6 +46,24 @@ _MODEL_LOADERS: dict[str, dict[str, str]] = {
     "H3ModelLoaderAny": {"model_name": "diffusion_models"},
     "H3ClipLoaderAny": {"clip_name": "text_encoders", "mmproj_name": "text_encoders"},
     "H3LoraStack": {f"lora_{index}": "loras" for index in range(1, 5)},
+    "LTXAVTextEncoderLoader": {"text_encoder": "text_encoders", "ckpt_name": "checkpoints"},
+    "LTXVAudioVAELoader": {"ckpt_name": "checkpoints"},
+    "LowVRAMAudioVAELoader": {"ckpt_name": "checkpoints"},
+    "LowVRAMLatentUpscaleModelLoader": {"model_name": "latent_upscale_models"},
+    "LTXICLoRALoaderModelOnly": {"lora_name": "loras"},
+    "LTXVQ8LoraModelLoader": {"lora_name": "loras"},
+    "LTXVLoadConditioning": {"file_name": "embeddings"},
+    "GemmaAPITextEncode": {"ckpt_name": "checkpoints"},
+    "WanVideoModelLoader": {"model": "diffusion_models"},
+    "WanVideoVACEModelSelect": {"vace_model": "diffusion_models"},
+    "WanVideoExtraModelSelect": {"extra_model": "diffusion_models"},
+    "WanVideoVAELoader": {"model_name": "vae"},
+    "WanVideoTinyVAELoader": {"model_name": "vae_approx"},
+    "LoadWanVideoT5TextEncoder": {"model_name": "text_encoders"},
+    "LoadWanVideoClipTextEncoder": {"model_name": "clip_vision"},
+    "WanVideoTextEncodeCached": {"model_name": "text_encoders"},
+    "WanVideoLoraSelect": {"lora": "loras"},
+    "WanVideoLoraSelectMulti": {f"lora_{index}": "loras" for index in range(5)},
     "CLIPLoaderGGUF": {"clip_name": "text_encoders"},
     "DualCLIPLoaderGGUF": {"clip_name1": "text_encoders", "clip_name2": "text_encoders"},
     "TripleCLIPLoaderGGUF": {"clip_name1": "text_encoders", "clip_name2": "text_encoders", "clip_name3": "text_encoders"},
@@ -64,6 +86,12 @@ _MODEL_LOADERS: dict[str, dict[str, str]] = {
     "DiffControlNetLoader": {"control_net_name": "controlnet"},
     "LoraLoader": {"lora_name": "loras"},
     "LoraLoaderModelOnly": {"lora_name": "loras"},
+    "CreateHookLora": {"lora_name": "loras"},
+    "CreateHookLoraModelOnly": {"lora_name": "loras"},
+    "CreateHookModelAsLora": {"ckpt_name": "checkpoints"},
+    "CreateHookModelAsLoraModelOnly": {"ckpt_name": "checkpoints"},
+    "LoraLoaderBypass": {"lora_name": "loras"},
+    "LoraLoaderBypassModelOnly": {"lora_name": "loras"},
     "StyleModelLoader": {"style_model_name": "style_models"},
     "GLIGENLoader": {"gligen_name": "gligen"},
     "HypernetworkLoader": {"hypernetwork_name": "hypernetworks"},
@@ -83,6 +111,20 @@ _MODEL_LOADERS: dict[str, dict[str, str]] = {
 }
 
 
+def model_input_folder(kind, key, value=None):
+    folder = _MODEL_LOADERS.get(kind, {}).get(key)
+    if kind == 'VAELoader' and key == 'vae_name' and isinstance(value, str):
+        # Core video tiny-VAEs are listed alongside normal VAEs but read from
+        # vae_approx. Keep the same full-name stem test as the loader.
+        if value.rsplit('.', 1)[0] in {'taehv', 'lighttaew2_2', 'lighttaew2_1', 'lighttaehy1_5', 'taeltx_2', 'taeh3'}:
+            return 'vae_approx'
+    return folder
+
+
+def model_input_catalog():
+    return copy.deepcopy(_MODEL_LOADERS)
+
+
 def model_references(workflow: dict) -> list[dict]:
     """Each loader input whose whole value is a model file, with its folder.
 
@@ -98,6 +140,12 @@ def model_references(workflow: dict) -> list[dict]:
         inputs = node.get("inputs")
         if not isinstance(kind, str) or not isinstance(inputs, dict):
             continue
+        if kind.startswith('DownloadAndLoad'):
+            raise StepError('bad_input', f'{kind} downloads model assets internally. Use a supported fixed-file loader for a portable job; this downloader does not declare all files for verified preparation.')
+        if kind == 'LTXVGemmaCLIPModelLoader':
+            raise StepError('bad_input', 'LTXVGemmaCLIPModelLoader needs a complete Gemma folder (all model shards, tokenizer, and config files). Full-folder exports are not supported yet. Use the native LTXAVTextEncoderLoader with a compatible single-file encoder for automatic sharing.')
+        if kind == 'VAELoader' and isinstance(inputs.get('vae_name'), str) and inputs['vae_name'] in {'taesd', 'taesdxl', 'taesd3', 'taef1', 'taef2'}:
+            raise StepError('bad_input', 'This built-in tiny VAE needs separate encoder and decoder files in vae_approx. Select a complete VAE model file for automatic portable setup; the implicit pair is not a single-file dependency.')
         if kind == 'H3ClipLoaderAny' and str(inputs.get('clip_name', '')).lower().endswith('.gguf'):
             sidecar = inputs.get('mmproj_name')
             if not isinstance(sidecar, str) or not sidecar.lower().endswith('.gguf'):
@@ -108,9 +156,17 @@ def model_references(workflow: dict) -> list[dict]:
                 continue  # The safetensors branch does not read a vision sidecar.
             if key in loaders and isinstance(value, (list, dict)):
                 raise StepError("bad_input", f"{kind} input {key} must name a fixed model file")
-            if not isinstance(value, str) or Path(value).suffix.lower() not in MODEL_EXTENSIONS:
+            if not isinstance(value, str):
+                if isinstance(value, (dict, list)) and _contains_model_file(value):
+                    raise StepError('bad_input', f'{kind} input {key} contains a structured model selection that is not supported for dependency export. Use a supported fixed-file loader so every model is declared.')
                 continue
-            folder = loaders.get(key)
+            folder = model_input_folder(kind, key, value)
+            if Path(value).suffix.lower() not in MODEL_EXTENSIONS:
+                if folder is not None:
+                    if key.startswith('lora') and value.strip().lower() in {'', 'none', '(none)'}: continue
+                    if kind == 'VAELoader' and value == 'pixel_space': continue
+                    raise StepError('bad_input', f'{kind} input {key} must name a supported model file. Folder bundles and implicit model selections need explicit dependency support before they can be shared.')
+                continue
             if folder is None:
                 raise StepError(
                     "bad_input",
@@ -122,6 +178,15 @@ def model_references(workflow: dict) -> list[dict]:
             seen.add(token)
             found.append({"filename": value, "folder": folder, "class_type": kind, "key": key})
     return found
+
+
+def _contains_model_file(value, depth=0):
+    if isinstance(value, str): return Path(value).suffix.lower() in MODEL_EXTENSIONS
+    if isinstance(value, (dict, list)):
+        if depth >= 32: raise StepError('bad_input', 'Workflow model selection is too deeply nested')
+        values = value.values() if isinstance(value, dict) else value
+        return any(_contains_model_file(item, depth + 1) for item in values)
+    return False
 
 
 def model_filenames(workflow: dict) -> list[str]:
@@ -162,6 +227,7 @@ def assign_slots(workflow: dict) -> tuple[list[dict], list[dict]]:
     """Name drop slots and result slots in node-id order."""
     images: list[dict] = []
     videos: list[dict] = []
+    audios: list[dict] = []
     image_outs: list[dict] = []
     video_outs: list[dict] = []
     for node_id in sorted(workflow, key=node_order):
@@ -173,11 +239,13 @@ def assign_slots(workflow: dict) -> tuple[list[dict], list[dict]]:
             images.append(_slot(node_id, kind, IMAGE_LOADERS[kind], IMAGE_EXTENSIONS))
         elif kind in VIDEO_LOADERS:
             videos.append(_slot(node_id, kind, VIDEO_LOADERS[kind], VIDEO_EXTENSIONS))
+        elif kind in AUDIO_LOADERS:
+            audios.append(_slot(node_id, kind, AUDIO_LOADERS[kind], AUDIO_EXTENSIONS + VIDEO_EXTENSIONS))
         elif kind in IMAGE_SAVERS:
             image_outs.append({"node_id": str(node_id), "class_type": kind})
         elif kind in VIDEO_SAVERS:
             video_outs.append({"node_id": str(node_id), "class_type": kind})
-    inputs = _number(images, "image") + _number(videos, "video")
+    inputs = _number(images, "image") + _number(videos, "video") + _number(audios, "audio")
     outputs = _number(image_outs, "image") + _number(video_outs, "video")
     return inputs, outputs
 

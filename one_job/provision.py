@@ -19,7 +19,7 @@ from pathlib import Path
 
 from one_job.errors import StepError
 from one_job.host import config_dir, find_model_file, model_dirs_for
-from one_job.paths import assert_unlinked, commit_text, relative_parts, single_segment
+from one_job.paths import assert_unlinked, commit_text, relative_parts, single_segment, contained
 
 PROVIDERS = {'huggingface': ('huggingface.co', 'HF_TOKEN'), 'civitai': ('civitai.com', 'CIVITAI_API_KEY')}
 MAX_MODEL = 200 * 1024**3
@@ -128,7 +128,8 @@ def plan_job(job_dir, link):
     from one_job.job import load_manifest, workflow_file, load_workflow, check_contract, _verified_hash, _git_head, sha256_file
     manifest = load_manifest(job_dir)
     path = workflow_file(job_dir, manifest)
-    check_contract(load_workflow(path), manifest)
+    workflow = load_workflow(path)
+    check_contract(workflow, manifest)
     sources = validate_sources(manifest['models'])
     actions, blocked = [], []
     for model in manifest['models']:
@@ -144,7 +145,12 @@ def plan_job(job_dir, link):
         if not model.get('url'):
             blocked.append(f'{folder}/{filename}: author must supply a download URL')
             continue
-        destination = model_dirs_for(Path(link.comfy_root), folder)[0] / filename
+        # Reuse preferred/shared roots when files exist, but publish new weights
+        # inside the linked ComfyUI. An external YAML default is a search path,
+        # not authorization to write into another application's model library.
+        directory = next((path for path in model_dirs_for(Path(link.comfy_root), folder) if contained(path, Path(link.comfy_root))), None)
+        if directory is None: raise StepError('bad_input', f'No model directory for {folder} is writable inside the linked ComfyUI root')
+        destination = directory / filename
         assert_unlinked(Path(link.comfy_root), destination, 'model download')
         actions.append({'kind': 'model', **model, **sources[(folder, filename)], 'destination': str(destination)})
     names = set()
@@ -169,6 +175,9 @@ def plan_job(job_dir, link):
         actions.append({'kind': 'node', **node, 'destination': str(pack)})
     # Bind confirmation to the actual contract and host, not the submitted action list.
     identity = [sha256_file(job_dir / 'manifest.json'), sha256_file(path), str(Path(link.comfy_root).resolve()), link.python]
+    from one_job.runtime_requirements import runtime_issues
+    from one_job.parameters import read_overrides
+    blocked.extend(runtime_issues(link, workflow, manifest, read_overrides(job_dir)))
     digest = hashlib.sha256(json.dumps([identity, actions, blocked], sort_keys=True).encode()).hexdigest()
     return {'digest': digest, 'contract': identity[:2], 'actions': actions, 'blocked': blocked}
 
@@ -358,9 +367,14 @@ def run_install(command, cwd, label):
         result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, timeout=1800, check=False)
     except (OSError, subprocess.TimeoutExpired):
         raise StepError('install_failed', f'{label} could not finish; check Git, Python and network access') from None
-    # Third-party installer output can contain URLs and credentials. Never forward it.
+    # Preserve useful installer failures while removing credentials and URL tokens.
     if result.returncode:
-        raise StepError('install_failed', f'{label} failed (exit {result.returncode}); no node pack was published')
+        from one_job.diagnostics import redact, known_secrets
+        output = getattr(result, 'stderr', b'') or getattr(result, 'stdout', b'') or b''
+        if isinstance(output, bytes): output = output.decode('utf-8', errors='replace')
+        detail = redact('\n'.join(str(output).splitlines()[-16:]), known_secrets())[-1800:]
+        message = f'{label} failed (exit {result.returncode}); no node pack was published'
+        raise StepError('install_failed', message + ('\n' + detail if detail else ''))
 
 
 def install_node(action, link):

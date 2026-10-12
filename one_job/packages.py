@@ -11,11 +11,12 @@ from one_job.export_job import clean_name
 from one_job.job import load_manifest, load_workflow, workflow_file, check_contract
 from one_job.provision import validate_sources
 from one_job.security import reject_embedded_secrets
+from one_job.slots import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS
 
 MAX_ARCHIVE = 512 * 1024**2
 MAX_EXPANDED = 4 * 1024**3
 MAX_FILE = 128 * 1024**2
-ALLOWED = {'.json', '.txt', '.md', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4', '.webm', '.mov', '.wav', '.mp3', '.flac', '.ogg'}
+ALLOWED = {'.json', '.txt', '.md'} | set(IMAGE_EXTENSIONS + VIDEO_EXTENSIONS + AUDIO_EXTENSIONS)
 
 
 def _parts(name):

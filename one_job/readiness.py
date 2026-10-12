@@ -28,6 +28,9 @@ def export_readiness(manifest, include_inputs=False):
         except Exception:
             issues.append({'kind': 'node', 'message': f'{name}: missing or unsupported repository URL'})
     inputs = [f"{slot['name']} ({', '.join(slot.get('extensions', []))})" for slot in manifest.get('inputs', [])]
+    for item in manifest.get('runtime_requirements', []):
+        if isinstance(item, dict):
+            issues.append({'kind': 'python', 'message': str(item.get('reason') or item.get('module') or 'Optional runtime dependency') + ': ' + str(item.get('help') or 'Verify a compatible build on the recipient machine.')})
     return {'ready': not issues, 'label': 'Ready for automatic setup' if not issues else 'Requires manual setup',
             'issues': issues, 'download_bytes': known_bytes, 'unknown_sizes': unknown_sizes,
             'required_inputs': inputs, 'include_inputs': include_inputs,

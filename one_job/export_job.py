@@ -20,6 +20,7 @@ REPAIR = {
     "comfy_not_found": ["ask_path"],
     "host_mismatch": ["ask_path"],
     "missing_node": ["install_pinned"],
+    "missing_python_dependency": ["ask"],
     "node_version_conflict": ["ask"],
     "missing_model": ["download_verified", "ask"],
     "missing_source": ["ask"],
@@ -167,6 +168,10 @@ def build_manifest(
         "parameters": accepted,
         "repair": REPAIR,
     }
+    from one_job.runtime_requirements import selected_checks
+    runtime = selected_checks(workflow, manifest)
+    if runtime:
+        manifest['runtime_requirements'] = [{key: item[key] for key in ('module', 'reason', 'help')} for item in runtime]
     if inputs:
         first_in = inputs[0]
         manifest["input"] = {

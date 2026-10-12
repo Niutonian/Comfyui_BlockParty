@@ -288,6 +288,24 @@ def _mapping_names(tree: ast.AST, constants, functions, class_attrs, dict_nodes)
     index_node_ids = False
 
     class Walker(ast.NodeVisitor):
+        def visit_ClassDef(self, node: ast.ClassDef):
+            # Lightricks registers legacy nodes with @comfy_node rather than
+            # literal NODE_CLASS_MAPPINGS. Inspect that known decorator only;
+            # do not run a received node pack to discover its registrations.
+            for decorator in node.decorator_list:
+                call = decorator if isinstance(decorator, ast.Call) else None
+                function = call.func if call else decorator
+                if _call_name(function) != 'comfy_node': continue
+                keywords = {item.arg: item.value for item in call.keywords} if call else {}
+                if isinstance(keywords.get('skip'), ast.Constant) and keywords['skip'].value is True: continue
+                name_node = keywords.get('name')
+                if name_node is None or isinstance(name_node, ast.Constant) and name_node.value is None:
+                    text = node.name[:-4] if node.name.endswith('Node') else node.name
+                else:
+                    text = _fold(name_node, constants, functions, class_attrs)
+                if text: found.add(text)
+            self.generic_visit(node)
+
         def visit_Assign(self, node: ast.Assign):
             self._assign(node.targets, node.value)
             self.generic_visit(node)

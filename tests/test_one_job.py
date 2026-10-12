@@ -1638,7 +1638,8 @@ class ReceivedJobTests(unittest.TestCase):
             pin = "a" * 40
             manifest["nodes"] = [{"name": "demo_pack", "commit": pin, "git_url": None}]
             (job / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            with patch("one_job.job.ensure_server"), patch("one_job.job._git_head", return_value=pin):
+            registry = {kind: {} for kind in ('CheckpointLoaderSimple', 'InstalledCustomNode', 'SaveImage')}
+            with patch("one_job.job.ensure_server"), patch("one_job.job._git_head", return_value=pin), patch('one_job.comfy._request', return_value=(200, json.dumps(registry).encode())):
                 record = prepare_job(job, link)
             self.assertEqual(record["models"]["checkpoints/unverified.safetensors"], sha256_file(model))
             self.assertFalse((job / "state" / "prepared.json").exists())

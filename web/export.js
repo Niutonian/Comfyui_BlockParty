@@ -7,7 +7,9 @@ const MEDIA_KEY = {
 	LoadVideo: "file",
 	VHS_LoadVideo: "video",
 	VHS_LoadVideoPath: "video",
+	LoadAudio: "audio",
 };
+let MODEL_INPUTS = {};
 const SAVERS = new Set(["SaveImage", "SaveVideo", "VHS_VideoCombine"]);
 const MODEL_EXT = [".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx", ".sft"];
 const EXPOSE = new Set(["text", "prompt", "negative", "width", "height", "seed", "noise_seed"]);
@@ -131,6 +133,9 @@ function candidates(workflow) {
 			if (MEDIA_KEY[node.class_type] === key) {
 				return;
 			}
+			if (Object.prototype.hasOwnProperty.call(MODEL_INPUTS[node.class_type] || {}, key)) {
+				return;
+			}
 			if (SAVERS.has(node.class_type) && key === "filename_prefix") {
 				return;
 			}
@@ -244,8 +249,7 @@ function aligned(value, low, step) {
 function hasMedia(workflow) {
 	return Object.values(workflow).some((node) => {
 		const kind = node && node.class_type;
-		return kind === "LoadImage" || kind === "LoadImageMask" || kind === "LoadVideo"
-			|| kind === "VHS_LoadVideo" || kind === "VHS_LoadVideoPath";
+		return Object.prototype.hasOwnProperty.call(MEDIA_KEY, kind);
 	});
 }
 
@@ -266,7 +270,7 @@ function openDialog(workflow, rows) {
 	const note = document.createElement("p");
 	note.className = "bp-note";
 	if (textOnly) {
-		note.textContent = "No image or video slot. Check the prompt and the seed. Drop a .txt file later, or run with --count.";
+		note.textContent = "No media input slot. Check the prompt and the seed. Drop a .txt file later, or run with --count.";
 	} else if (rows.length) {
 		note.textContent = "Check the values a run may change. The ceiling starts at the current value.";
 	} else {
@@ -599,9 +603,14 @@ app.registerExtension({
 				}
 				let rows;
 				try {
+					const response = await api.fetchApi("/block_party/model_inputs", {method: "POST", headers: {"X-Block-Party": "export"}});
+					if (!response.ok) throw new Error("Reload the updated Block Party extension after restarting ComfyUI.");
+					const catalog = await response.json();
+					if (!catalog.ok || !catalog.loaders) throw new Error("Model input catalog is unavailable.");
+					MODEL_INPUTS = catalog.loaders;
 					rows = candidates(graph.output);
 				} catch (error) {
-					notify("error", "Could not read the values on this graph.");
+					notify("error", error.message || "Could not read the values on this graph.");
 					console.error(error);
 					return;
 				}

@@ -463,20 +463,24 @@ def model_dirs_for(comfy_root: Path, folder: str) -> list[Path]:
         except OSError:
             continue
         for block in blocks:
-            entry = block.get(folder)
-            if not entry:
-                continue
-            values = entry if isinstance(entry, list) else [entry]
             base = block.get("base_path")
             base_path = Path(base) if isinstance(base, str) and base else None
             if base_path is not None and not base_path.is_absolute():
                 base_path = (comfy_root / base_path).resolve()
-            for value in values:
-                candidate = Path(value)
-                if not candidate.is_absolute():
-                    root = base_path if base_path is not None else comfy_root
-                    candidate = root / value
-                dirs.append(candidate)
+            keys = {'diffusion_models': {'diffusion_models', 'unet'}, 'text_encoders': {'text_encoders', 'clip'}}.get(folder, {folder})
+            for key, entry in block.items():
+                if key not in keys or not entry: continue
+                values = entry if isinstance(entry, list) else [entry]
+                for value in values:
+                    candidate = Path(value)
+                    if not candidate.is_absolute():
+                        root = base_path if base_path is not None else comfy_root
+                        candidate = root / value
+                    if str(block.get('is_default', '')).lower() in {'true', 'yes', '1'}:
+                        dirs = [path for path in dirs if os.path.normcase(str(path)) != os.path.normcase(str(candidate))]
+                        dirs.insert(0, candidate)
+                    else:
+                        dirs.append(candidate)
     unique: list[Path] = []
     seen: set[str] = set()
     for directory in dirs:

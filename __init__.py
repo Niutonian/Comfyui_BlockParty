@@ -148,6 +148,14 @@ def _peer_is_local(remote: str | None) -> bool:
     return remote.rsplit("%", 1)[0] in _LOCAL_PEERS
 
 
+@PromptServer.instance.routes.post('/block_party/model_inputs')
+async def model_inputs(request):
+    if not export_request_allowed(request.remote, request.headers):
+        return web.json_response({'ok': False, 'message': 'local browser only'}, status=403)
+    from one_job.slots import model_input_catalog
+    return web.json_response({'ok': True, 'loaders': model_input_catalog()})
+
+
 @PromptServer.instance.routes.post("/block_party/export_preview")
 @PromptServer.instance.routes.post("/block_party/export")
 async def export_job(request):

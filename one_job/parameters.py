@@ -17,18 +17,20 @@ from one_job.errors import StepError
 from one_job.paths import assert_unlinked
 from one_job.slots import (
     IMAGE_LOADERS,
+    AUDIO_LOADERS,
     IMAGE_SAVERS,
     MODEL_EXTENSIONS,
     VIDEO_LOADERS,
     VIDEO_SAVERS,
     node_order,
+    model_input_folder,
 )
 
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 _TYPES = {"string", "integer", "number", "boolean", "seed"}
 _SEED_KEYS = {"seed", "noise_seed"}
 _SAVERS = set(IMAGE_SAVERS) | set(VIDEO_SAVERS)
-_MEDIA = {**IMAGE_LOADERS, **VIDEO_LOADERS}
+_MEDIA = {**IMAGE_LOADERS, **VIDEO_LOADERS, **AUDIO_LOADERS}
 _SEED_LIMIT = 2**32
 
 
@@ -326,6 +328,8 @@ def _target_problem(workflow: dict, spec: dict) -> str | None:
 
 
 def _blocked(class_type: str, key: str, value) -> bool:
+    if model_input_folder(class_type, key, value) is not None:
+        return True  # Includes optional model selectors currently set to None.
     if value is None or isinstance(value, (list, dict)):
         return True
     if not isinstance(value, (str, bool, int, float)):

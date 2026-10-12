@@ -12,6 +12,8 @@ from one_job.paths import assert_unlinked, safe_filename, job_relative
 
 TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
          '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.ogg': 'audio/ogg'}
+TYPES.update({'.bmp': 'image/bmp', '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.m4a': 'audio/mp4',
+              '.aac': 'audio/aac', '.opus': 'audio/ogg', '.aiff': 'audio/aiff', '.aif': 'audio/aiff'})
 
 
 def result_folders(root):

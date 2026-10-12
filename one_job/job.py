@@ -274,7 +274,7 @@ def ensure_server(link) -> None:
 
 # Bump when the checks a prepared job must pass change. Older records, and any
 # record shipped inside the job folder, do not authorize a run.
-POLICY = 3
+POLICY = 4
 
 
 def prepared_path(job_dir: Path) -> Path:
@@ -396,9 +396,27 @@ def prepare_job(job_dir: Path, link) -> dict:
     check_contract(workflow, manifest, comfy_root=Path(link.comfy_root), custom_nodes=Path(link.custom_nodes))
     parameter_lines = format_parameter_lines(manifest, read_overrides(job_dir))
     models = verify_models(Path(link.comfy_root), manifest, workflow)
+    verify_registered_nodes(link, workflow)
+    from one_job.runtime_requirements import verify_runtime_requirements
+    verify_runtime_requirements(job_dir, link, workflow, manifest)
     for line in parameter_lines:
         print(line)
     return save_preparation(job_dir, link, manifest, path, models)
+
+
+def verify_registered_nodes(link, workflow):
+    """Source files alone do not prove a node imported successfully on this host."""
+    from one_job.comfy import _request
+    from one_job.slots import required_node_classes
+    try:
+        registered = json.loads(_request(link.url.rstrip('/') + '/object_info')[1])
+    except (ValueError, TypeError):
+        raise StepError('missing_node', 'ComfyUI returned an invalid node registry; check its startup log') from None
+    if not isinstance(registered, dict):
+        raise StepError('missing_node', 'ComfyUI returned an invalid node registry; check its startup log')
+    missing = sorted(set(required_node_classes(workflow)) - registered.keys())
+    if missing:
+        raise StepError('missing_node', 'Required nodes are not loaded in the running ComfyUI: ' + ', '.join(missing) + '. Check its startup log for missing Python packages or incompatible ComfyUI/node versions, then restart and prepare again.')
 
 
 def contract_is_stale(job_dir: Path, record: dict) -> str | None:
@@ -442,6 +460,8 @@ def require_prepared(job_dir: Path, link) -> dict:
     if current_nodes != record.get("node_files"):
         raise StepError("stale_contract", "node files changed; run prepare again")
     verify_models(Path(link.comfy_root), manifest, workflow, quiet=True)
+    from one_job.runtime_requirements import verify_runtime_requirements
+    verify_runtime_requirements(job_dir, link, workflow, manifest)
     return record
 
 
@@ -819,7 +839,7 @@ def run_pending(job_dir: Path, link, quiet_if_empty: bool = False, count: int | 
                     raise StepError('bad_input', 'A failed item has partial outputs. Inspect those files before retrying: ' + item['stem'])
     elif count is not None:
         if manifest["inputs"]:
-            raise StepError("bad_input", "count is for a job with no image or video. Drop files into input/ for this job.")
+            raise StepError("bad_input", "count is for a job without media inputs. Drop files into input/ for this job.")
         if count < 1:
             raise StepError("bad_input", "count must be at least 1")
         sets = count_runs(job_dir, count, lambda name: read_status(job_dir, name))

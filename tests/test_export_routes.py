@@ -72,6 +72,16 @@ class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post('/block_party/download_share', headers=self.headers, json={'name': '../private'})
         self.assertEqual(response.status, 400)
 
+    async def test_model_input_catalog_is_scoped_and_contains_optional_selectors(self):
+        response = await self.client.post('/block_party/model_inputs')
+        self.assertEqual(response.status, 403)
+        response = await self.client.post('/block_party/model_inputs', headers=self.headers)
+        self.assertEqual(response.status, 200)
+        catalog = (await response.json())['loaders']
+        self.assertEqual(catalog['LTXAVTextEncoderLoader']['text_encoder'], 'text_encoders')
+        self.assertEqual(catalog['H3LoraStack']['lora_1'], 'loras')
+        self.assertFalse((self.root / 'jobs').exists())
+
     async def test_windows_open_folder_invokes_explorer_without_a_shell(self):
         (self.root / 'share').mkdir()
         with patch.object(self.module.sys, 'platform', 'win32'), patch.object(self.module.subprocess, 'Popen') as launch:
