@@ -1004,10 +1004,10 @@ class ParameterTests(unittest.TestCase):
         self.assertEqual(by_name["text"]["type"], "string")
         self.assertEqual(by_name["text"]["default"], "a cat")
         self.assertEqual(by_name["width"]["min"], 64)
-        self.assertEqual(by_name["width"]["max"], 1024)
-        self.assertEqual(by_name["width"]["step"], 64)
-        self.assertEqual(bounds_for("width", "integer", 1000), (64, 1000, 8))
-        self.assertEqual(bounds_for("width", "integer", 1001), (64, 1001, 1))
+        self.assertEqual(by_name["width"]["max"], 4096)
+        self.assertEqual(by_name["width"]["step"], 8)
+        self.assertEqual(bounds_for("width", "integer", 1000), (64, 4096, 8))
+        self.assertEqual(bounds_for("width", "integer", 1001), (64, 4096, 1))
         self.assertEqual(bounds_for("steps", "integer", 20), (20, 20, 1))
         manifest = build_manifest(
             _graph(),
@@ -1133,10 +1133,10 @@ class ParameterTests(unittest.TestCase):
             self.assertIn("seed  random  (default)", buffer.getvalue())
             rejected = StringIO()
             with redirect_stdout(rejected):
-                code = main(["parameters", str(job), "set", "width", "4096"])
+                code = main(["parameters", str(job), "set", "width", "8192"])
             self.assertEqual(code, 1)
-            self.assertIn("between 64 and 1024", rejected.getvalue())
-            self.assertIn("steps of 64", rejected.getvalue())
+            self.assertIn("between 64 and 4096", rejected.getvalue())
+            self.assertIn("steps of 8", rejected.getvalue())
             self.assertEqual(
                 json.loads((job / "state" / "parameters.json").read_text(encoding="utf-8")),
                 {"prompt": "a dog"},

@@ -274,7 +274,7 @@ def ensure_server(link) -> None:
 
 # Bump when the checks a prepared job must pass change. Older records, and any
 # record shipped inside the job folder, do not authorize a run.
-POLICY = 4
+POLICY = 5
 
 
 def prepared_path(job_dir: Path) -> Path:

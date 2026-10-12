@@ -21,7 +21,7 @@ VIDEO_LOADERS = {
     "VHS_LoadVideo": "video",
     "VHS_LoadVideoPath": "video",
 }
-AUDIO_LOADERS = {"LoadAudio": "audio"}
+AUDIO_LOADERS = {"LoadAudio": "audio", "VHS_LoadAudioUpload": "audio"}
 IMAGE_SAVERS = ("SaveImage",)
 VIDEO_SAVERS = ("SaveVideo", "VHS_VideoCombine")
 
@@ -240,7 +240,7 @@ def assign_slots(workflow: dict) -> tuple[list[dict], list[dict]]:
         elif kind in VIDEO_LOADERS:
             videos.append(_slot(node_id, kind, VIDEO_LOADERS[kind], VIDEO_EXTENSIONS))
         elif kind in AUDIO_LOADERS:
-            audios.append(_slot(node_id, kind, AUDIO_LOADERS[kind], AUDIO_EXTENSIONS + VIDEO_EXTENSIONS))
+            audios.append(_slot(node_id, kind, AUDIO_LOADERS[kind], AUDIO_EXTENSIONS + (VIDEO_EXTENSIONS if kind == 'LoadAudio' else [])))
         elif kind in IMAGE_SAVERS:
             image_outs.append({"node_id": str(node_id), "class_type": kind})
         elif kind in VIDEO_SAVERS:
@@ -312,6 +312,8 @@ def normalize_manifest(data: dict) -> dict:
         data["parameters"] = []
     elif not isinstance(data["parameters"], list):
         raise StepError("bad_input", "parameters must be a list")
+    from one_job.parameters import flexible_dimension_specs
+    data['parameters'] = flexible_dimension_specs(data['parameters'])
     return data
 
 
@@ -369,14 +371,14 @@ def _multi_sets(job_dir: Path, slots: list[dict], input_dir: Path, claimed_dir: 
 
     groups: dict[str, list[Path]] = {}
     for path in pool:
-        parsed = _INDEXED.match(path.stem)
+        parsed = series_parts(path, slots)
         if parsed is None:
             continue
-        groups.setdefault(parsed.group(1).casefold(), []).append(path)
+        groups.setdefault(parsed[0].casefold(), []).append(path)
     for key in sorted(groups):
         entries = sorted(groups[key], key=lambda path: path.name.casefold())
-        parsed = _INDEXED.match(entries[0].stem)
-        prefix = parsed.group(1) if parsed else key
+        parsed = series_parts(entries[0], slots)
+        prefix = parsed[0] if parsed else key
         chosen = _assign_series(entries, slots)
         if len(chosen) == len(slots):
             stem = _canonical_stem(slots) if _prefix_is_kind(prefix, slots) else prefix
@@ -389,11 +391,14 @@ def _multi_sets(job_dir: Path, slots: list[dict], input_dir: Path, claimed_dir: 
     original = workflow_input_names(job_dir, slots)
     chosen = {}
     for slot in slots:
+        expected = original.get(slot['name'], '')
+        stem = Path(expected).stem.casefold()
+        unique_stem = expected and sum(Path(name).stem.casefold() == stem for name in original.values()) == 1
         candidates = [path for path in pool if path not in occupied
-                      and path.name.casefold() == original.get(slot['name'], '').casefold()
+                      and (path.name.casefold() == expected.casefold() or (unique_stem and path.stem.casefold() == stem))
                       and path.suffix.lower() in extensions_for(slot)]
         if candidates:
-            chosen[slot['name']] = sorted(candidates, key=lambda path: str(path).casefold())[0]
+            chosen[slot['name']] = sorted(candidates, key=lambda path: (path.name.casefold() != expected.casefold(), str(path).casefold()))[0]
             occupied.add(chosen[slot['name']])
     if len(chosen) == len(slots):
         sets.append(_media_item(job_dir, input_dir, claimed_dir, _canonical_stem(slots), chosen, slots, read_status))
@@ -468,8 +473,8 @@ def _assign_series(entries: list[Path], slots: list[dict]) -> dict[str, Path]:
         for path in entries:
             if path in taken:
                 continue
-            parsed = _INDEXED.match(path.stem)
-            if parsed is None or int(parsed.group(2)) != index:
+            parsed = series_parts(path, slots)
+            if parsed is None or parsed[1] != index or (parsed[2] and parsed[2] != slot['name']):
                 continue
             if path.suffix.lower() not in extensions:
                 continue
@@ -480,6 +485,22 @@ def _assign_series(entries: list[Path], slots: list[dict]) -> dict[str, Path]:
         chosen[slot["name"]] = pick
         taken.add(pick)
     return chosen
+
+
+def series_parts(path, slots):
+    """Typed suffixes keep overlapping formats separate in mixed media sets."""
+    for slot in sorted(slots, key=lambda slot: len(slot['name']), reverse=True):
+        suffix = '_' + slot['name']
+        if path.stem.casefold().endswith(suffix.casefold()) and len(path.stem) > len(suffix):
+            return path.stem[:-len(suffix)], _slot_index(slot), slot['name']
+    parsed = _INDEXED.match(path.stem)
+    return (parsed[1], int(parsed[2]), None) if parsed else None
+
+
+def series_filename(batch, slot, slots, suffix):
+    mixed = len({_slot_kind(item) for item in slots}) > 1
+    tail = slot['name'] if mixed else str(_slot_index(slot))
+    return f'{batch}_{tail}{suffix}'
 
 
 def _media_item(job_dir, input_dir, claimed_dir, stem: str, files: dict[str, Path], slots: list[dict], read_status) -> dict:

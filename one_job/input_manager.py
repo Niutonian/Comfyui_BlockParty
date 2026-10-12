@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from one_job.errors import StepError
 from one_job.paths import assert_unlinked, safe_filename
-from one_job.slots import collect_sets, extensions_for, workflow_input_names, _exact_assignment, _assign_series, _slot_index
+from one_job.slots import collect_sets, extensions_for, workflow_input_names, _exact_assignment, _assign_series, _slot_index, series_parts, series_filename
 
 
 def pending_files(root):
@@ -35,8 +35,8 @@ def overview(root, manifest):
     if not assigned:
         groups = {}
         for path in files:
-            match = re.fullmatch(r'([A-Za-z0-9_-]{1,100})_(\d+)', path.stem)
-            if match: groups.setdefault(match[1], []).append(path)
+            match = series_parts(path, slots)
+            if match: groups.setdefault(match[0], []).append(path)
         for prefix, entries in groups.items():
             chosen = _assign_series(entries, slots)
             if chosen:
@@ -44,15 +44,19 @@ def overview(root, manifest):
                 break
     if not assigned:
         for slot in slots:
-            match = next((path for path in files if path.name.casefold() == originals.get(slot['name'], '').casefold()
-                          and path.suffix.lower() in extensions_for(slot)), None)
+            expected = originals.get(slot['name'], '')
+            stem = Path(expected).stem.casefold()
+            unique = expected and sum(Path(name).stem.casefold() == stem for name in originals.values()) == 1
+            candidates = [path for path in files if (path.name.casefold() == expected.casefold() or (unique and path.stem.casefold() == stem))
+                          and path.suffix.lower() in extensions_for(slot)]
+            match = next(iter(sorted(candidates, key=lambda path: path.name.casefold() != expected.casefold())), None)
             if match: assigned[slot['name']] = match
         batch = '__original__' if assigned else 'inputs-' + uuid.uuid4().hex[:12]
     rows = []
     for index, slot in enumerate(slots):
         original = originals.get(slot['name'], '')
         kind = slot['name'].rsplit('_', 1)[0].capitalize()
-        rows.append({**slot, 'label': f'{kind} {_slot_index(slot) + 1}', 'original': original,
+        rows.append({**slot, 'label': f'{kind} {_slot_index(slot) + 1}', 'kind': kind.lower(), 'original': original,
                      'assigned': assigned[slot['name']].name if slot['name'] in assigned else None})
     return {'slots': rows, 'batch': batch, 'files': [path.name for path in files],
             'ready': len(ready), 'missing': missing}
@@ -64,16 +68,17 @@ def upload_name(root, manifest, slot_name, batch, filename):
     if not slot or suffix not in extensions_for(slot):
         raise StepError('bad_input', 'This file does not match that input slot')
     if batch == '__original__':
-        original = workflow_input_names(root, manifest['inputs']).get(slot_name)
-        if not original or Path(original).suffix.lower() != suffix:
+        originals = workflow_input_names(root, manifest['inputs'])
+        original = originals.get(slot_name)
+        unique = original and sum(Path(name).stem.casefold() == Path(original).stem.casefold() for name in originals.values()) == 1
+        if not original or (not unique and Path(original).suffix.lower() != suffix):
             raise StepError('bad_input', 'Use the expected file type for this reference, or assign a new complete input set')
-        return safe_filename(original, 'input filename')
+        return safe_filename(Path(original).stem + suffix, 'input filename')
     if batch and not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', batch):
         raise StepError('bad_input', 'Invalid input set name')
     if len(manifest['inputs']) == 1:
         return safe_filename(filename, 'input filename')
-    stem = f'{batch}_{_slot_index(slot)}' if batch else slot_name
-    return safe_filename(stem + suffix, 'input filename')
+    return safe_filename(series_filename(batch, slot, manifest['inputs'], suffix) if batch else slot_name + suffix, 'input filename')
 
 
 def assign_files(root, manifest, batch, bindings):
@@ -144,9 +149,11 @@ def markup(root, manifest, token):
         parts.append('<article class="card"><h3>' + _esc(label) + '</h3><p class="subtle">' + _esc(name) + ' · Node ' + _esc(slot['node_id']) + '</p>')
         if assigned:
             url = '/input_media?name=' + quote(assigned, safe='')
-            kind = TYPES.get(Path(assigned).suffix.lower(), '').split('/')[0]
+            kind = slot['kind']
             if kind == 'image': parts.append('<img loading="lazy" src="' + url + '" alt="' + _esc(label) + '">')
             elif kind in {'video', 'audio'}: parts.append(f'<{kind} controls preload="metadata" src="{url}"></{kind}>')
+            if kind == 'audio' and TYPES.get(Path(assigned).suffix.lower(), '').startswith('video/'):
+                parts.append('<p class="subtle">This audio input uses the sound track from the uploaded video.</p>')
             parts.append('<p class="success">Ready: ' + _esc(assigned) + '</p>')
         else:
             parts.append('<p class="hint">Missing reference</p><label>Upload ' + _esc(slot['label']) + '<input class="slot-upload" type="file" data-slot="' + _esc(name) + '" accept="' + _esc(','.join(slot['extensions'])) + '"></label>')
@@ -164,6 +171,9 @@ def markup(root, manifest, token):
             parts.append('<article class="card"><p>' + _esc(filename) + '</p>')
             if TYPES.get(Path(filename).suffix.lower(), '').startswith('image/'):
                 parts.append('<img loading="lazy" src="/input_media?name=' + quote(filename, safe='') + '" alt="' + _esc(filename) + '">')
+            elif TYPES.get(Path(filename).suffix.lower(), '').split('/')[0] in {'video', 'audio'}:
+                kind = TYPES[Path(filename).suffix.lower()].split('/')[0]
+                parts.append(f'<{kind} controls preload="metadata" src="/input_media?name={quote(filename, safe="")}"></{kind}>')
             parts.append('</article>')
         parts.append('</div><p>These files are outside the displayed set. Other complete named sets also run. Assign unmatched files to the cards above.</p></details>')
     parts.append('</section>')

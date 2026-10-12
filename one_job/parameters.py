@@ -34,22 +34,19 @@ _MEDIA = {**IMAGE_LOADERS, **VIDEO_LOADERS, **AUDIO_LOADERS}
 _SEED_LIMIT = 2**32
 
 
-def bounds_for(key: str, kind: str, value):
-    """Suggested min, max, and step. The ceiling is the current value.
+def bounds_for(key: str, kind: str, value, class_type=None):
+    """Suggested ranges, with room to resize beyond the exported dimensions.
 
-    Width and height start at 64 when the current size allows it. The step
-    follows that size: 64 when it lines up, otherwise 8, otherwise 1.
+    Most dimensions use eight-pixel steps when aligned. H3 Keyframes uses
+    its native minimum and 32-pixel steps. Explicit author bounds stay valid.
     """
     if kind == "integer" and key in {"width", "height"}:
         number = int(value)
-        if number % 64 == 0:
-            step = 64
-        elif number % 8 == 0:
-            step = 8
-        else:
-            step = 1
+        if class_type == 'H3Keyframes':
+            return 32, max(4096, number), 32
+        step = 8 if number % 8 == 0 else 1
         low = 64 if number >= 64 else number
-        return low, number, step
+        return low, max(4096, number), step
     if kind == "integer":
         number = int(value)
         return number, number, 1
@@ -87,11 +84,28 @@ def parameter_candidates(workflow: dict) -> list[dict]:
                 "type": value_kind,
                 "default": "random" if value_kind == "seed" else value,
             }
-            bounds = bounds_for(key, value_kind, value)
+            bounds = bounds_for(key, value_kind, value, kind)
             if bounds is not None:
                 row["min"], row["max"], row["step"] = bounds
             rows.append(row)
     return rows
+
+
+def flexible_dimension_specs(specs):
+    """Upgrade the old automatically inferred size ceiling in existing jobs.
+
+    Explicit author bounds that differ from the old defaults are preserved.
+    """
+    result = deepcopy(specs)
+    for spec in result:
+        if not isinstance(spec, dict) or spec.get('key') not in {'width', 'height'} or spec.get('type') != 'integer': continue
+        value = spec.get('default')
+        if type(value) is not int: continue
+        old_step = 64 if value % 64 == 0 else 8 if value % 8 == 0 else 1
+        old = (64 if value >= 64 else value, value, old_step)
+        if tuple(spec.get(key) for key in ('min', 'max', 'step')) == old:
+            spec['min'], spec['max'], spec['step'] = bounds_for(spec['key'], 'integer', value, spec.get('class_type'))
+    return result
 
 
 def accept_parameters(workflow: dict, raw) -> list[dict]:

@@ -8,6 +8,7 @@ const MEDIA_KEY = {
 	VHS_LoadVideo: "video",
 	VHS_LoadVideoPath: "video",
 	LoadAudio: "audio",
+	VHS_LoadAudioUpload: "audio",
 };
 let MODEL_INPUTS = {};
 const SAVERS = new Set(["SaveImage", "SaveVideo", "VHS_VideoCombine"]);
@@ -97,15 +98,12 @@ function takeName(base, used) {
 	throw new Error("too many parameters");
 }
 
-function boundsFor(key, type, value) {
+function boundsFor(key, type, value, classType) {
 	if (type === "integer" && (key === "width" || key === "height")) {
 		let step = 1;
-		if (value % 64 === 0) {
-			step = 64;
-		} else if (value % 8 === 0) {
-			step = 8;
-		}
-		return { min: value >= 64 ? 64 : value, max: value, step };
+		if (classType === "H3Keyframes") return { min: 32, max: Math.max(4096, value), step: 32 };
+		if (value % 8 === 0) step = 8;
+		return { min: value >= 64 ? 64 : value, max: Math.max(4096, value), step };
 	}
 	if (type === "integer") {
 		return { min: value, max: value, step: 1 };
@@ -153,7 +151,7 @@ function candidates(workflow) {
 				checked: EXPOSE.has(key),
 				seedMode: "random",
 			};
-			const bounds = boundsFor(key, type, value);
+			const bounds = boundsFor(key, type, value, node.class_type);
 			if (bounds) {
 				row.min = bounds.min;
 				row.max = bounds.max;

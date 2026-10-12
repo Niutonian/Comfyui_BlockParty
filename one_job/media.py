@@ -108,9 +108,11 @@ def reuse_result(root, relative, slot_name):
     if not slot or source.suffix.lower() not in slot['extensions']:
         raise StepError('bad_input', 'This result does not match that input slot')
     folder = root / 'input'; assert_unlinked(root, folder, 'input'); folder.mkdir(exist_ok=True)
-    suffix = '_' + slot_name.rsplit('_', 1)[-1] if len(slots) > 1 else ''
+    from one_job.slots import series_filename
     for number in range(1, 10000):
-        destination = folder / safe_filename(f'{source.stem[:100]}-reuse-{number}{suffix}{source.suffix}')
+        stem = f'{source.stem[:100]}-reuse-{number}'
+        filename = series_filename(stem, slot, slots, source.suffix) if len(slots) > 1 else stem + source.suffix
+        destination = folder / safe_filename(filename)
         assert_unlinked(root, destination, 'reused input')
         try:
             with destination.open('xb') as target, source.open('rb') as incoming: shutil.copyfileobj(incoming, target)
