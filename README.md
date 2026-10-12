@@ -256,7 +256,7 @@ The ZIP is `share/my_film.zip`. Extract it into `projects/` on the receiving mac
 
 Jobs and project packages are kept locally and ignored by Git. Export your own workflow or unpack a shared ZIP before following these examples; example job names in this README are placeholders. Model weights, node code, credentials, previous outputs and run state are excluded from project ZIPs. The screenshots illustrate a locally created singularity project, which is not bundled in the repository.
 
-In ComfyUI, **Comfyui_BlockParty → Export job** writes the folder. Restart ComfyUI after this node is added or updated, or the menu item is the previous one. Check the values a run may change. The design notes are in `CONCEPT.md`.
+In ComfyUI, **Comfyui_BlockParty → Export job** writes the folder. Restart ComfyUI after this node is added or updated, or the menu item is the previous one. Check the values a run may change.
 
 ## MCP job control
 
