@@ -42,7 +42,17 @@ def create_environment(job, original, cancel=None):
     root = config_dir() / 'environments' / key(job)
     assert_unlinked(config_dir(), root, 'isolated environment')
     if root.exists():
-        raise StepError('bad_input', 'an incomplete environment exists; inspect it before retrying')
+        raise StepError('bad_input', f'An incomplete environment exists at {root}. Use the shared environment, or inspect and move this folder aside before retrying isolation. A full Python installation with venv and ensurepip is required.')
+    # Portable embedded Python commonly lacks these modules. Check before copying
+    # ComfyUI or creating a directory that would block the next attempt.
+    code = 'import importlib.util,json;print(json.dumps({n:importlib.util.find_spec(n) is not None for n in ("venv","ensurepip")}))'
+    try:
+        probe = subprocess.run([original.python, '-c', code], capture_output=True, timeout=30, check=True)
+        modules = json.loads(probe.stdout)
+        if not isinstance(modules, dict) or not all(modules.get(n) is True for n in ('venv', 'ensurepip')):
+            raise StepError('install_failed', 'The linked ComfyUI Python lacks venv or ensurepip. Use the shared environment for this portable installation, or link a full Python environment for isolation. No isolated environment was created.')
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise StepError('install_failed', 'Could not check isolated Python support. Verify the linked Python executable before retrying.') from None
     root.mkdir(parents=True)
     source = Path(original.comfy_root)
     target = root / 'ComfyUI'

@@ -63,8 +63,9 @@ class ProjectApp(App):
         except StepError as error:
             with self.lock: self.error = str(error)
             print(str(error), flush=True)
-        except Exception:
-            with self.lock: self.error = 'Project failed; check dependencies, FFmpeg and the stage status records.'
+        except Exception as error:
+            from one_job.diagnostics import report_exception
+            report_exception(self, error, 'Project failed')
         finally:
             from one_job.diagnostics import clean_logs
             clean_logs(self, tokens)

@@ -43,6 +43,19 @@ def clean_logs(app, tokens):
         app.error = redact(app.error, values)
 
 
+def report_exception(app, error, operation):
+    """Keep unexpected failures actionable without exposing keys or locals."""
+    import traceback
+    secrets = known_secrets() + list(getattr(app, 'private_tokens', {}).values())
+    message = redact(f'{operation}: {type(error).__name__}: {error}', secrets)[:2000]
+    trace = redact(''.join(traceback.format_exception(type(error), error, error.__traceback__)), secrets)
+    with app.lock:
+        app.error = message
+        app.lines.extend(trace.splitlines()[-60:])
+        del app.lines[:-200]
+    app._progress({'phase': 'failed', 'message': message})
+
+
 def report(app):
     from one_job.experience import records
     from one_job.media import result_folders

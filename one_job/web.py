@@ -383,8 +383,9 @@ class App:
         except StepError as error:
             with self.lock: self.error = f'{error.code}: {error.message}'
             print(f'{error.code}: {error.message}', flush=True)
-        except Exception:
-            with self.lock: self.error = 'Preparation failed. Review dependencies and retry.'
+        except Exception as error:
+            from one_job.diagnostics import report_exception
+            report_exception(self, error, 'Preparation failed')
         finally:
             from one_job.diagnostics import clean_logs
             clean_logs(self, tokens)

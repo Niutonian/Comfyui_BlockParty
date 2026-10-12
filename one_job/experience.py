@@ -242,8 +242,9 @@ def flow_worker(app, count, mode, digest, tokens):
         with app.lock: app.error = str(error)
         app._progress({'phase': 'cancelled' if error.code == 'cancelled' else 'failed', 'message': error.message})
         print(str(error), flush=True)
-    except Exception:
-        with app.lock: app.error = 'Operation failed. Check the job inputs and dependency plan, then retry.'
+    except Exception as error:
+        from one_job.diagnostics import report_exception
+        report_exception(app, error, 'Operation failed')
     finally:
         from one_job.diagnostics import clean_logs
         clean_logs(app, tokens)

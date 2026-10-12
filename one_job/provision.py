@@ -25,6 +25,17 @@ PROVIDERS = {'huggingface': ('huggingface.co', 'HF_TOKEN'), 'civitai': ('civitai
 MAX_MODEL = 200 * 1024**3
 
 
+def model_download_url(value):
+    """Translate Hugging Face's file viewer to its actual download endpoint."""
+    source_url(value)
+    parts = urllib.parse.urlsplit(value)
+    segments = parts.path.split('/')
+    if parts.hostname == 'huggingface.co' and len(segments) >= 6 and segments[3] == 'blob':
+        segments[3] = 'resolve'
+        return urllib.parse.urlunsplit(parts._replace(path='/'.join(segments)))
+    return value
+
+
 def source_url(value, *, network=False, redirect=False):
     if not isinstance(value, str) or any(ord(c) <= 32 for c in value):
         raise StepError('bad_input', 'download source must be a public HTTPS URL')
@@ -68,7 +79,7 @@ def validate_sources(models):
         if auth not in (None, *PROVIDERS):
             raise StepError('bad_input', 'model authentication must be huggingface or civitai')
         if url:
-            source_url(url)
+            url = model_download_url(url)
             if auth and urllib.parse.urlsplit(url).hostname != PROVIDERS[auth][0]:
                 raise StepError('bad_input', 'credential provider does not match the download host')
         size = model.get('size_bytes')
@@ -118,7 +129,7 @@ def plan_job(job_dir, link):
     manifest = load_manifest(job_dir)
     path = workflow_file(job_dir, manifest)
     check_contract(load_workflow(path), manifest)
-    validate_sources(manifest['models'])
+    sources = validate_sources(manifest['models'])
     actions, blocked = [], []
     for model in manifest['models']:
         folder, filename = model['folder'], model['filename']
@@ -135,7 +146,7 @@ def plan_job(job_dir, link):
             continue
         destination = model_dirs_for(Path(link.comfy_root), folder)[0] / filename
         assert_unlinked(Path(link.comfy_root), destination, 'model download')
-        actions.append({'kind': 'model', **model, 'destination': str(destination)})
+        actions.append({'kind': 'model', **model, **sources[(folder, filename)], 'destination': str(destination)})
     names = set()
     for node in manifest.get('nodes') or []:
         name = single_segment(node.get('name'), 'node pack')
@@ -189,10 +200,14 @@ class PublicHTTPSConnection(http.client.HTTPSConnection):
 
 class PublicHTTPSHandler(urllib.request.HTTPSHandler):
     def https_open(self, req):
-        return self.do_open(PublicHTTPSConnection, req, context=self._context, check_hostname=self._check_hostname)
+        # HTTPSHandler configures certificate/hostname checks in the SSL context.
+        # Its old _check_hostname attribute and connection argument were removed
+        # in modern Python; forwarding them breaks every model download.
+        return self.do_open(PublicHTTPSConnection, req, context=self._context)
 
 
 def open_download(url, tokens, offset=0, etag=None):
+    url = model_download_url(url)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), PublicHTTPSHandler())
     for _ in range(8):
         source_url(url, network=True, redirect=True)
