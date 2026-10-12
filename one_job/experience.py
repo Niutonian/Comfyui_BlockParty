@@ -99,6 +99,16 @@ def mount_html(app, html):
 def get_extra(app, handler, path):
     from one_job.media import result_path, results, send_file, TYPES
     from one_job.paths import job_relative
+    if path == '/input_media':
+        try:
+            from one_job.input_manager import pending_files
+            name = safe_filename(parse_qs(urlparse(handler.path).query).get('name', [''])[0], 'input filename')
+            file = next((file for file in pending_files(app.job_dir) if file.name == name), None)
+            if file is None or file.suffix.lower() not in TYPES:
+                raise StepError('bad_input', 'Input preview unavailable')
+            send_file(handler, file, TYPES[file.suffix.lower()])
+        except (StepError, OSError): app._send(handler, 404, b'Input not found', 'text/plain')
+        return True
     if path == '/brand-header':
         asset = Path(__file__).resolve().parents[1] / 'docs/images/block-party-header-v1.png'
         if asset.is_file(): send_file(handler, asset, 'image/png')
@@ -129,6 +139,20 @@ def get_extra(app, handler, path):
 
 
 def post_extra(app, handler, path, fields):
+    if path == '/assign_inputs':
+        from one_job.web import _one
+        from one_job.job import load_manifest
+        from one_job.input_manager import assign_files
+        with app.lock:
+            if app.running: raise StepError('bad_input', 'Wait for the run to finish before changing inputs')
+            manifest = load_manifest(app.job_dir)
+            bindings = {slot['name']: _one(fields, 'bind:' + slot['name']) for slot in manifest['inputs']}
+            try: assign_files(app.job_dir, manifest, _one(fields, 'batch') or '', bindings)
+            except OSError:
+                raise StepError('bad_input', 'Could not assign inputs. Reload and check folder permissions before retrying.') from None
+        app.notice = 'Input assignments saved. Review the reference thumbnails, then run.'
+        app._redirect(handler, '/')
+        return True
     from one_job.everyday import post
     if post(app, handler, path, fields): return True
     from one_job.web import _one
@@ -154,8 +178,12 @@ def upload(app, handler):
         app._send(handler, 403, b'Open this page from its form', 'text/plain'); return
     try:
         if app.running: raise StepError('bad_input', 'Wait for the run to finish before adding inputs')
-        name = safe_filename(parse_qs(urlparse(handler.path).query).get('name', [''])[0], 'input filename')
+        query = parse_qs(urlparse(handler.path).query)
+        name = safe_filename(query.get('name', [''])[0], 'input filename')
         manifest = load_manifest(app.job_dir)
+        if query.get('slot'):
+            from one_job.input_manager import upload_name
+            name = upload_name(app.job_dir, manifest, query['slot'][0], query.get('batch', [''])[0], name)
         allowed = {'.txt'} | {ext for slot in manifest['inputs'] for ext in slot['extensions']}
         if Path(name).suffix.lower() not in allowed: raise StepError('bad_input', 'File type does not match this job')
         length = int(handler.headers.get('Content-Length', '0'))
@@ -182,7 +210,7 @@ def upload(app, handler):
             os_link = __import__('os').link
             os_link(temporary, target)
         finally: temporary.unlink(missing_ok=True)
-        app._send(handler, 200, b'{"ok":true}', 'application/json')
+        app._send(handler, 200, json.dumps({'ok': True, 'name': name}).encode(), 'application/json')
     except (StepError, OSError, ValueError) as error:
         app._send(handler, 400, json.dumps({'ok': False, 'message': getattr(error, 'message', 'Could not add this input')}).encode(), 'application/json')
 
@@ -202,6 +230,8 @@ def start_flow(app, fields, mode='run'):
         if mode == 'run':
             if not manifest['inputs'] and not _prompt_files(app.job_dir, manifest): count = _runs_value(fields)
             save_fields(app.job_dir, manifest, fields)
+            from one_job.input_manager import require_inputs
+            require_inputs(app.job_dir, manifest)
     tokens = {provider: _one(fields, provider + '_token') or '' for provider in ('huggingface', 'civitai')}
     with app.lock:
         if app.running: raise StepError('bad_input', 'This job is already running')
@@ -233,6 +263,10 @@ def flow_worker(app, count, mode, digest, tokens):
             provision_job(app.job_dir, app.link, plan['digest'], tokens, cancel=app.cancel_preparation, restart=True)
             app.dependency_plan = None
             if app.cancel_preparation.is_set(): raise StepError('cancelled', 'Cancelled before rendering')
+            if mode == 'run':
+                from one_job.input_manager import require_inputs
+                from one_job.job import load_manifest
+                require_inputs(app.job_dir, load_manifest(app.job_dir))
             failures = run_pending(app.job_dir, app.link, count=count, cancel=app.cancel_preparation,
                                    retry_failed=mode == 'retry', resume_only=mode == 'resume')
             if failures: raise StepError('unclassified', f'{failures} item(s) failed. Review their messages, then retry failed items.')

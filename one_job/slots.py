@@ -383,7 +383,45 @@ def _multi_sets(job_dir: Path, slots: list[dict], input_dir: Path, claimed_dir: 
             sets.append(_media_item(job_dir, input_dir, claimed_dir, stem, chosen, slots, read_status))
         elif chosen:
             missing.extend(_missing_label(prefix, slot) for slot in slots if slot["name"] not in chosen)
-    return sets, missing
+    # Existing exports retain the author's loader filenames. Recognize those
+    # names too, without guessing that an arbitrary three files are in order.
+    occupied = {path for item in sets for path in item['files'].values()} | used
+    original = workflow_input_names(job_dir, slots)
+    chosen = {}
+    for slot in slots:
+        candidates = [path for path in pool if path not in occupied
+                      and path.name.casefold() == original.get(slot['name'], '').casefold()
+                      and path.suffix.lower() in extensions_for(slot)]
+        if candidates:
+            chosen[slot['name']] = sorted(candidates, key=lambda path: str(path).casefold())[0]
+            occupied.add(chosen[slot['name']])
+    if len(chosen) == len(slots):
+        sets.append(_media_item(job_dir, input_dir, claimed_dir, _canonical_stem(slots), chosen, slots, read_status))
+    elif chosen:
+        missing.extend(slot['name'] for slot in slots if slot['name'] not in chosen)
+    if not sets and not missing:
+        missing.extend(slot['name'] for slot in slots)
+    return sets, list(dict.fromkeys(missing))
+
+
+def workflow_input_names(job_dir, slots):
+    """Original loader basenames are hints, never permission to read their paths."""
+    from one_job.job import load_manifest, load_workflow, workflow_file
+    try:
+        workflow = load_workflow(workflow_file(job_dir, load_manifest(job_dir)))
+    except (StepError, OSError):
+        return {}
+    result = {}
+    for slot in slots:
+        node = workflow.get(str(slot['node_id']), {})
+        value = node.get('inputs', {}).get(slot['key'])
+        if isinstance(value, str):
+            filename = value.replace('\\', '/').rsplit('/', 1)[-1]
+            if Path(filename).suffix.lower() in extensions_for(slot):
+                result[slot['name']] = filename
+    # Repeated original filenames cannot identify distinct reference roles.
+    return {name: value for name, value in result.items()
+            if sum(other.casefold() == value.casefold() for other in result.values()) == 1}
 
 
 def _media_files(job_dir: Path, slots: list[dict], input_dir: Path, claimed_dir: Path, read_status) -> list[Path]:

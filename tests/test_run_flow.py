@@ -37,9 +37,14 @@ class RunFlowTests(unittest.TestCase):
             time.sleep(.01)
         self.fail('worker did not finish')
 
+    def media_job(self, root):
+        job, manifest, workflow = fixture(root, media=True)
+        (job / 'input/input.png').write_bytes(b'input')
+        return job, manifest, workflow
+
     def test_dependencies_require_confirmation_then_prepare_and_run(self):
         with tempfile.TemporaryDirectory() as temporary:
-            job, _, _ = fixture(Path(temporary), media=True)
+            job, _, _ = self.media_job(Path(temporary))
             app = App(job, object())
             plan = {'digest': 'a'*64, 'actions': [{'kind': 'model', 'folder': 'vae', 'filename': 'model', 'url': 'https://huggingface.co/example/model', 'auth': 'huggingface', 'size_bytes': 100}], 'blocked': []}
             order = []
@@ -60,7 +65,7 @@ class RunFlowTests(unittest.TestCase):
 
     def test_ready_job_runs_without_extra_dependency_confirmation(self):
         with tempfile.TemporaryDirectory() as temporary:
-            job, _, _ = fixture(Path(temporary), media=True)
+            job, _, _ = self.media_job(Path(temporary))
             app = App(job, object())
             plan = {'digest': 'a'*64, 'actions': [], 'blocked': []}
             with patch('one_job.provision.plan_job', return_value=plan), patch('one_job.provision.provision_job') as prepare, patch('one_job.job.run_pending', return_value=0) as run:
@@ -71,7 +76,7 @@ class RunFlowTests(unittest.TestCase):
 
     def test_changed_plan_is_not_installed(self):
         with tempfile.TemporaryDirectory() as temporary:
-            job, _, _ = fixture(Path(temporary), media=True)
+            job, _, _ = self.media_job(Path(temporary))
             app = App(job, object())
             app.pending_flow = (None, 'run')
             app.dependency_plan = {'digest': 'a'*64}
@@ -83,7 +88,7 @@ class RunFlowTests(unittest.TestCase):
 
     def test_failed_preparation_never_runs_and_releases_gate(self):
         with tempfile.TemporaryDirectory() as temporary:
-            job, _, _ = fixture(Path(temporary), media=True)
+            job, _, _ = self.media_job(Path(temporary))
             app = App(job, object())
             with patch('one_job.provision.plan_job', return_value={'digest': 'a'*64, 'actions': [], 'blocked': []}), patch('one_job.provision.provision_job', side_effect=StepError('missing_node', 'Node missing')), patch('one_job.job.run_pending') as run:
                 start_flow(app, {})

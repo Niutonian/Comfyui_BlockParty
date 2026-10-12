@@ -24,10 +24,12 @@ This opens the local browser library. `python -m one_job library` and `python -m
 
 1. Open **Machine setup**, find your existing ComfyUI installation or enter its folder, and save the connection. Compatibility checks report Python, pip, ComfyUI connectivity, reported devices, Git, and video tools. They do not render a test image or guarantee that a particular workflow fits your GPU.
 2. Drop a shared ZIP onto the library. Block Party validates it and imports the job or project, including bundled example inputs. Name collisions get a new suffix, so existing work is preserved. Imports do not install dependencies or execute workflows.
-3. Open a job, add inputs or edit its prompts, and choose **Prepare and Run**. Review and confirm any missing dependency downloads or installations. A ready job proceeds directly to rendering. The verified idle ComfyUI host can be started or restarted as needed.
+3. Open a job, add inputs or edit its prompts, and choose **Prepare and Run**. The **Workflow inputs** cards show each required reference, its thumbnail, and whether a complete set is ready. Upload directly to a card, or drop several files and review their assignments before running. Review and confirm any missing dependency downloads or installations. A ready job proceeds directly to rendering. The verified idle ComfyUI host can be started or restarted as needed.
 4. Open **Results** to browse images, play supported video/audio, download files and saved API workflows, or reuse a compatible result as a new job input.
 
 Library cards show descriptions, the latest image result, completion counts, and setup or running status. Ready reflects the last local verification; execution rechecks dependencies. Your jobs, projects, inputs, and results remain local and are ignored by Git.
+
+For multiple references, matching workflow filenames take precedence; other uploads fill compatible empty cards in selection order. The selectors let you assign existing uploads or correct reference order. Applying assignments gives the set a fresh name and carries its matching prompt file along. Original filenames from older exports are also recognized, so three named image loaders can use their original uploaded files without manual renaming. A run with missing references stops before generation and lists what needs to be added.
 
 The workspace uses the robot-party header, a dark theme, and responsive controls. Machine preparation, recovery, and job management live in expandable sections so the main settings remain easy to scan.
 

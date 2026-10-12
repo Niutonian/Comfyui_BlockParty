@@ -266,7 +266,7 @@ class App:
         if not self._token_ok(fields):
             self._send(handler, 403, b"open this page from the form", "text/plain; charset=utf-8")
             return
-        if path not in {"/save", "/run", "/review", "/prepare", "/isolate", "/restart", "/cancel", '/prepare_run', '/resume', '/retry_failed', '/reuse', '/open_results', '/rename', '/duplicate', '/preset_save', '/preset_load', '/preset_delete'}:
+        if path not in {"/save", "/run", "/review", "/prepare", "/isolate", "/restart", "/cancel", '/prepare_run', '/resume', '/retry_failed', '/reuse', '/open_results', '/rename', '/duplicate', '/preset_save', '/preset_load', '/preset_delete', '/assign_inputs'}:
             self._send(handler, 404, b"not found", "text/plain; charset=utf-8")
             return
         try:
@@ -302,6 +302,8 @@ class App:
                 count = _runs_value(fields)
             save_fields(self.job_dir, manifest, fields)
             if path == "/run":
+                from one_job.input_manager import require_inputs
+                require_inputs(self.job_dir, manifest)
                 self._start(count)
             else:
                 self.notice = 'Settings saved. No run was started.'
@@ -503,6 +505,9 @@ class App:
                     parts.append('<p>Continue approves this plan, starts or restarts the verified idle host as needed, then runs the selected items.</p><button type="submit" formaction="/prepare_run">Confirm setup and run</button>')
                 parts.append('<button type="submit">Confirm downloads and installs / Prepare</button></form>')
         parts.append('</details>')
+        from one_job.input_manager import markup, UPLOAD_JS
+        input_markup, input_info = markup(self.job_dir, manifest, self.token)
+        parts.append(input_markup)
         presets = read_local(self.job_dir, 'presets.json')
         if presets:
             parts.append('<section class="panel"><h2>Prompt presets</h2><form method="post" action="/preset_load" class="preset-row">' + f'<input type="hidden" name="token" value="{_esc(self.token)}">' + '<label>Saved preset<select name="preset_name">')
@@ -557,8 +562,8 @@ class App:
         for action, label in (('/resume', 'Resume unfinished work'), ('/retry_failed', 'Retry failed items')):
             parts.append(f'<form method="post" action="{action}"><input type="hidden" name="token" value="{_esc(self.token)}"><button class="secondary">{label}</button></form>')
         parts.append('</div></details>')
-        parts.append('<section class="drop" id="input-drop"><h2>Add inputs</h2><p>Drop images, videos, audio or prompt text files here. Existing filenames are never replaced.</p><input type="file" id="input-files" aria-label="Add input files" multiple><p id="upload-message" role="status"></p></section>')
-        parts.append('<script>const uploadToken=' + json.dumps(self.token) + ';async function addInputs(files){const message=document.getElementById("upload-message");try{for(const file of files){message.textContent="Adding "+file.name;const r=await fetch("/upload?name="+encodeURIComponent(file.name),{method:"POST",headers:{"X-Block-Party-Token":uploadToken},body:file});const d=await r.json();if(!r.ok)throw new Error(d.message||"Upload failed");}location.reload()}catch(e){message.textContent=e.message;}}document.getElementById("input-files").onchange=e=>addInputs(e.target.files);const drop=document.getElementById("input-drop");drop.ondragover=e=>{e.preventDefault();drop.classList.add("over")};drop.ondragleave=()=>drop.classList.remove("over");drop.ondrop=e=>{e.preventDefault();drop.classList.remove("over");addInputs(e.dataTransfer.files)};</script>')
+        parts.append('<section class="drop" id="input-drop"><h2>Add inputs</h2><p>Drop images, videos, audio or prompt text files here. Matching workflow filenames are assigned first. Other media fill compatible empty cards in selection order. Review the thumbnails before running. Existing files are never replaced.</p><input type="file" id="input-files" aria-label="Add input files" multiple><p id="upload-message" role="status"></p></section>')
+        parts.append('<script>const inputBase=' + json.dumps(self.base_path) + ';' + UPLOAD_JS.replace('UPLOAD_TOKEN', json.dumps(self.token), 1).replace('INPUT_INFO', json.dumps(input_info).replace('<', '\\u003c'), 1) + '</script>')
         snapshots = self.job_dir / "state" / "workflows"
         assert_unlinked(self.job_dir, snapshots, "saved workflows")
         if snapshots.is_dir():
