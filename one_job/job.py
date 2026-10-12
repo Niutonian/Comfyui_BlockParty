@@ -145,14 +145,8 @@ def _require_declared_nodes(workflow: dict, manifest: dict, comfy_root: Path, cu
         if isinstance(item, dict) and isinstance(item.get("name"), str):
             declared.add(item["name"])
     needed: set[str] = set()
-    seen: set[str] = set()
-    for node in workflow.values():
-        if not isinstance(node, dict):
-            continue
-        kind = node.get("class_type")
-        if not isinstance(kind, str) or not kind or kind in seen:
-            continue
-        seen.add(kind)
+    from one_job.slots import required_node_classes
+    for kind in required_node_classes(workflow):
         packs = provided.get(kind) or set()
         if packs:
             needed.update(packs)

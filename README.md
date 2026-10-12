@@ -116,6 +116,8 @@ Runs recheck model hashes, node commits, and installed node contents. The launch
 
 Use workflows and custom nodes you trust. A pinned node is still Python code running with ComfyUI's permissions; this launcher is not a sandbox. Model loader filenames must be fixed values from a supported loader. Inputs generated through graph connections are rejected for those fields. Export rejects recognized credential fields; keep credentials in local node configuration and review custom-node graphs before sharing.
 
+H3 multishot exports support `H3ModelLoaderAny`, `H3ClipLoaderAny`, and the four slots of `H3LoraStack`. GGUF variants also include the pinned ComfyUI-GGUF pack that H3 calls internally. For a GGUF H3 text encoder, select a specific `mmproj_name` instead of `(auto)` before exporting. This makes the required vision sidecar an explicit, hash-verified dependency in the shared job. Safetensors encoders do not need that sidecar selection.
+
 Uploads use a unique `one-job/<id>/` input folder and never request overwrite. Those uploaded files are retained so queued or resumed jobs can still read them. Individual uploads and downloaded responses are limited to 128 MB; text prompts are limited to 1 MB. The launcher reports an error for larger files.
 
 The listener must be identifiable as the linked ComfyUI at the configured address and port. Windows uses process/socket inspection; Linux and macOS also require `lsof` and process visibility. If identity cannot be established, the launcher stops. Export is restricted to the local, same-origin ComfyUI browser page, without proxy-forwarding headers. Do not expose the export route through a reverse proxy. Restart ComfyUI and reload its browser page after updating this extension.

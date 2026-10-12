@@ -444,7 +444,8 @@ def provision_job(job_dir, link, confirmed_digest, one_shot=None, cancel=None, r
                 install_node(action, link)
                 nodes = True
                 from one_job.job import load_workflow
-                required = sorted({node['class_type'] for node in load_workflow(workflow_path).values()})
+                from one_job.slots import required_node_classes
+                required = required_node_classes(load_workflow(workflow_path))
                 if restart_record.exists():
                     try: required = sorted(set(required) | set(json.loads(restart_record.read_text(encoding='utf-8'))))
                     except (ValueError, TypeError):

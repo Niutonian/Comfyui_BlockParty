@@ -124,17 +124,14 @@ def build_manifest(
         )
     if sources:
         raise StepError("bad_input", "download source does not match a workflow model")
+    from one_job.slots import required_node_classes
     packs: dict[str, dict] = {}
-    resolved_classes = set()
-    for node in workflow.values():
-        if not isinstance(node, dict):
-            continue
-        kind = node.get("class_type")
-        if kind in resolved_classes:
-            continue
-        resolved_classes.add(kind)
+    explicit_classes = {node.get('class_type') for node in workflow.values() if isinstance(node, dict)}
+    for kind in required_node_classes(workflow):
         pack = resolve_pack(kind)
         if not pack:
+            if kind not in explicit_classes:
+                raise StepError('missing_node', f'H3 requires {kind} for its GGUF file. Install/enable ComfyUI-GGUF and restart ComfyUI before exporting.')
             continue
         pack_name = single_segment(str(pack.get("name") or ""), "node pack")
         commit = pack.get("commit")

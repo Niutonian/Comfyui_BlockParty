@@ -39,6 +39,9 @@ _MODEL_LOADERS: dict[str, dict[str, str]] = {
     "UNETLoader": {"unet_name": "diffusion_models"},
     "UnetLoaderGGUF": {"unet_name": "diffusion_models"},
     "UnetLoaderGGUFAdvanced": {"unet_name": "diffusion_models"},
+    "H3ModelLoaderAny": {"model_name": "diffusion_models"},
+    "H3ClipLoaderAny": {"clip_name": "text_encoders", "mmproj_name": "text_encoders"},
+    "H3LoraStack": {f"lora_{index}": "loras" for index in range(1, 5)},
     "CLIPLoaderGGUF": {"clip_name": "text_encoders"},
     "DualCLIPLoaderGGUF": {"clip_name1": "text_encoders", "clip_name2": "text_encoders"},
     "TripleCLIPLoaderGGUF": {"clip_name1": "text_encoders", "clip_name2": "text_encoders", "clip_name3": "text_encoders"},
@@ -95,8 +98,14 @@ def model_references(workflow: dict) -> list[dict]:
         inputs = node.get("inputs")
         if not isinstance(kind, str) or not isinstance(inputs, dict):
             continue
+        if kind == 'H3ClipLoaderAny' and str(inputs.get('clip_name', '')).lower().endswith('.gguf'):
+            sidecar = inputs.get('mmproj_name')
+            if not isinstance(sidecar, str) or not sidecar.lower().endswith('.gguf'):
+                raise StepError('bad_input', 'H3ClipLoaderAny uses a GGUF vision sidecar. Select its explicit mmproj_name instead of (auto) before exporting, so the shared job includes and verifies that file.')
         loaders = _MODEL_LOADERS.get(kind, {})
         for key, value in inputs.items():
+            if kind == 'H3ClipLoaderAny' and key == 'mmproj_name' and not str(inputs.get('clip_name', '')).lower().endswith('.gguf'):
+                continue  # The safetensors branch does not read a vision sidecar.
             if key in loaders and isinstance(value, (list, dict)):
                 raise StepError("bad_input", f"{kind} input {key} must name a fixed model file")
             if not isinstance(value, str) or Path(value).suffix.lower() not in MODEL_EXTENSIONS:
@@ -118,6 +127,20 @@ def model_references(workflow: dict) -> list[dict]:
 def model_filenames(workflow: dict) -> list[str]:
     """Model filenames referenced by supported loaders."""
     return [item["filename"] for item in model_references(workflow)]
+
+
+def required_node_classes(workflow: dict) -> list[str]:
+    """Include H3's GGUF backend even when its loader is not drawn in the graph."""
+    classes = {node.get('class_type') for node in workflow.values() if isinstance(node, dict) and isinstance(node.get('class_type'), str)}
+    for node in workflow.values():
+        if not isinstance(node, dict): continue
+        kind, inputs = node.get('class_type'), node.get('inputs') or {}
+        if not isinstance(inputs, dict): continue
+        key, backend = {'H3ModelLoaderAny': ('model_name', 'UnetLoaderGGUF'),
+                        'H3ClipLoaderAny': ('clip_name', 'CLIPLoaderGGUF')}.get(kind, ('', ''))
+        if backend and isinstance(inputs.get(key), str) and inputs[key].lower().endswith('.gguf'):
+            classes.add(backend)
+    return sorted(classes)
 
 
 def node_order(node_id: str):
