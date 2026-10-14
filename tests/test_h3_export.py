@@ -19,6 +19,30 @@ def graph(model='h3.gguf', clip='encoder.gguf'):
 
 
 class H3ExportTests(unittest.TestCase):
+    def test_kj_tiny_preview_vae_is_exported_from_vae_approx(self):
+        from one_job.parameters import parameter_candidates
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = root / 'taeh3.safetensors'; model.write_bytes(b'preview decoder')
+            workflow = {'1': {'class_type': 'ModelPreviewOverrideKJ', 'inputs': {'tiny_vae': model.name}},
+                        '2': {'class_type': 'SaveVideo', 'inputs': {'filename_prefix': 'film'}}}
+            requested = []
+            def resolve(name, folder):
+                requested.append((name, folder)); return folder, model
+            pack = {'name': 'comfyui-kjnodes', 'git_url': 'https://github.com/kijai/ComfyUI-KJNodes', 'commit': 'a'*40}
+            manifest = build_manifest(workflow, resolve, lambda kind: pack if kind == 'ModelPreviewOverrideKJ' else None, name='preview')
+            self.assertEqual(requested, [(model.name, 'vae_approx')])
+            self.assertEqual(manifest['models'][0]['folder'], 'vae_approx')
+            self.assertEqual(manifest['nodes'][0]['name'], 'comfyui-kjnodes')
+            check_contract(workflow, manifest)
+            archive = write_share(root / 'jobs', 'preview', workflow, manifest)
+            imported = Path(import_package(archive, root / 'recipient')['path'])
+            self.assertEqual(json.loads((imported / 'manifest.json').read_text())['models'][0]['folder'], 'vae_approx')
+            for value in ('none', '(None)', ''):
+                workflow['1']['inputs']['tiny_vae'] = value
+                self.assertEqual(model_references(workflow), [])
+                self.assertNotIn('tiny_vae', [row['key'] for row in parameter_candidates(workflow)])
+
     def test_correct_folders_for_model_encoder_sidecar_and_lora(self):
         refs = model_references(graph())
         self.assertEqual([(r['filename'], r['folder']) for r in refs],

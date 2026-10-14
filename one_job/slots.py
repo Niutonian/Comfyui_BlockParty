@@ -46,6 +46,7 @@ _MODEL_LOADERS: dict[str, dict[str, str]] = {
     "H3ModelLoaderAny": {"model_name": "diffusion_models"},
     "H3ClipLoaderAny": {"clip_name": "text_encoders", "mmproj_name": "text_encoders"},
     "H3LoraStack": {f"lora_{index}": "loras" for index in range(1, 5)},
+    "ModelPreviewOverrideKJ": {"tiny_vae": "vae_approx"},
     "LTXAVTextEncoderLoader": {"text_encoder": "text_encoders", "ckpt_name": "checkpoints"},
     "LTXVAudioVAELoader": {"ckpt_name": "checkpoints"},
     "LowVRAMAudioVAELoader": {"ckpt_name": "checkpoints"},
@@ -163,6 +164,7 @@ def model_references(workflow: dict) -> list[dict]:
             folder = model_input_folder(kind, key, value)
             if Path(value).suffix.lower() not in MODEL_EXTENSIONS:
                 if folder is not None:
+                    if kind == 'ModelPreviewOverrideKJ' and key == 'tiny_vae' and value.strip().lower() in {'none', '(none)', ''}: continue
                     if key.startswith('lora') and value.strip().lower() in {'', 'none', '(none)'}: continue
                     if kind == 'VAELoader' and value == 'pixel_space': continue
                     raise StepError('bad_input', f'{kind} input {key} must name a supported model file. Folder bundles and implicit model selections need explicit dependency support before they can be shared.')
