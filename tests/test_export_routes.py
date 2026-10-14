@@ -51,6 +51,17 @@ class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual((await response.json())['version'], 2)
 
+    async def test_unknown_model_folder_discovery_is_local_and_reports_candidates(self):
+        graph = {'1': {'class_type': 'FutureTinyDecoder', 'inputs': {'file': 'preview.safetensors'}}}
+        response = await self.client.post('/block_party/model_mapping_candidates', json={'workflow': graph})
+        self.assertEqual(response.status, 403)
+        with patch.object(self.module.folder_paths, 'folder_names_and_paths', {'vae_approx': [], 'vae': [], 'custom_nodes': []}, create=True), \
+             patch.object(self.module, '_resolve_model', side_effect=lambda name, folder: (folder, 'unused') if folder == 'vae_approx' else None):
+            response = await self.client.post('/block_party/model_mapping_candidates', headers=self.headers, json={'workflow': graph})
+        candidate = (await response.json())['candidates'][0]
+        self.assertEqual(candidate['folders'], ['vae_approx'])
+        self.assertEqual(candidate['node_id'], '1')
+
     async def test_preparation_failure_keeps_export_success_and_downloadable_zip(self):
         workflow = {'1': {'class_type': 'SaveImage', 'inputs': {'filename_prefix': 'out'}}}
         with patch('one_job.job.prepare_job', side_effect=StepError('comfy_not_found', 'host not ready')):

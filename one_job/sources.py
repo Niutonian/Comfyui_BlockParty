@@ -7,7 +7,7 @@ from one_job.paths import assert_unlinked
 from one_job.provision import open_download, validate_sources
 
 
-def previous_sources(jobs_root, name, workflow):
+def previous_sources(jobs_root, name, workflow, model_mappings=None):
     from one_job.export_job import clean_name
     from one_job.slots import model_references
     path = jobs_root / clean_name(name) / 'manifest.json'
@@ -19,7 +19,7 @@ def previous_sources(jobs_root, name, workflow):
     except (ValueError, AttributeError):
         raise StepError('bad_input', 'previous manifest is invalid') from None
     validate_sources(models)
-    refs = {(m['folder'], m['filename']): m for m in model_references(workflow)}
+    refs = {(m['folder'], m['filename']): m for m in model_references(workflow, model_mappings)}
     return [{**refs[(m['folder'], m['filename'])], **m} for m in models
             if (m['folder'], m['filename']) in refs]
 

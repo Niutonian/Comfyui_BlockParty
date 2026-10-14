@@ -69,6 +69,7 @@ def build_manifest(
     parameters=None,
     model_sources=None,
     saved_sources=None,
+    model_mappings=None,
 ) -> dict:
     if not isinstance(workflow, dict) or not workflow:
         raise StepError("bad_input", "the graph has no nodes")
@@ -84,7 +85,7 @@ def build_manifest(
     if not isinstance(supplied, list):
         raise StepError('bad_input', 'model sources must be a list')
     translated = []
-    references = model_references(workflow)
+    references = model_references(workflow, model_mappings)
     for source in supplied:
         if not isinstance(source, dict):
             raise StepError('bad_input', 'invalid model source')
@@ -100,7 +101,7 @@ def build_manifest(
     source_hashes = {(s['folder'], s['filename']): s.get('sha256') for s in merged}
     sources = validate_sources(merged)
     models = []
-    for ref in model_references(workflow):
+    for ref in references:
         filename = ref["filename"]
         resolved = _call_resolve(resolve_model, filename, ref["folder"])
         if resolved is None:
@@ -168,6 +169,9 @@ def build_manifest(
         "parameters": accepted,
         "repair": REPAIR,
     }
+    if model_mappings:
+        from one_job.model_adapters import validate_mappings
+        manifest['model_mappings'] = list(validate_mappings(workflow, model_mappings).values())
     from one_job.runtime_requirements import selected_checks
     runtime = selected_checks(workflow, manifest)
     if runtime:

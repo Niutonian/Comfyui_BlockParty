@@ -162,6 +162,35 @@ async def model_inputs(request):
     return web.json_response({'ok': True, 'loaders': model_input_catalog()})
 
 
+@PromptServer.instance.routes.post('/block_party/model_mapping_candidates')
+async def model_mapping_candidates(request):
+    if not export_request_allowed(request.remote, request.headers):
+        return web.json_response({'ok': False, 'message': 'local browser only'}, status=403)
+    try:
+        raw = await request.content.read(_MAX_EXPORT + 1)
+        if len(raw) > _MAX_EXPORT: raise StepError('bad_input', 'workflow is too large')
+        payload = json.loads(raw)
+        workflow = payload.get('workflow') if isinstance(payload, dict) else None
+        if not isinstance(workflow, dict) or len(workflow) > 1000: raise StepError('bad_input', 'invalid workflow')
+        from one_job.slots import MODEL_EXTENSIONS, model_input_folder
+        candidates = []
+        folders = [name for name in folder_paths.folder_names_and_paths
+                   if name.lower() not in {'custom_nodes', 'input', 'output', 'temp', 'user', 'configs'}]
+        for node_id, node in workflow.items():
+            if not isinstance(node, dict) or not isinstance(node.get('class_type'), str) or not isinstance(node.get('inputs'), dict): continue
+            for key, filename in node['inputs'].items():
+                if not isinstance(filename, str) or Path(filename).suffix.lower() not in MODEL_EXTENSIONS: continue
+                if model_input_folder(node['class_type'], key, filename) is not None: continue
+                relative_parts(filename, 'model filename')
+                matches = [folder for folder in folders if _resolve_model(filename, folder) is not None]
+                candidates.append({'node_id': str(node_id), 'class_type': node['class_type'], 'key': key,
+                                   'filename': filename, 'folders': sorted(matches)})
+                if len(candidates) > 256: raise StepError('bad_input', 'too many unknown model selectors')
+        return web.json_response({'ok': True, 'candidates': candidates})
+    except (StepError, ValueError, OSError) as error:
+        return web.json_response({'ok': False, 'message': error.message if isinstance(error, StepError) else 'Could not inspect model selectors'}, status=400)
+
+
 @PromptServer.instance.routes.get('/block_party/h3_status')
 async def h3_status(request):
     # Read-only capability information, with tiny CPU probes and no host paths,
@@ -205,7 +234,8 @@ async def export_job(request):
             name=name,
             parameters=payload.get("parameters", []),
             model_sources=payload.get("model_sources", []),
-            saved_sources=await asyncio.to_thread(previous_sources, _jobs_root(), name, workflow),
+            model_mappings=payload.get('model_mappings', []),
+            saved_sources=await asyncio.to_thread(previous_sources, _jobs_root(), name, workflow, payload.get('model_mappings', [])),
         )
         from one_job.readiness import export_readiness
         readiness = export_readiness(manifest, include_inputs)
@@ -311,7 +341,7 @@ async def model_sources(request):
         if not isinstance(payload, dict) or not isinstance(payload.get('workflow'), dict):
             raise StepError('bad_input', 'source request needs a workflow')
         name = clean_name(payload.get('name') or '')
-        sources = await asyncio.to_thread(previous_sources, _jobs_root(), name, payload['workflow'])
+        sources = await asyncio.to_thread(previous_sources, _jobs_root(), name, payload['workflow'], payload.get('model_mappings', []))
         if payload.get('discover') is True:
             from one_job.provision import credentials
             tokens = credentials()

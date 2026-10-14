@@ -251,7 +251,7 @@ function hasMedia(workflow) {
 	});
 }
 
-function openDialog(workflow, rows) {
+function openDialog(workflow, rows, mappingCandidates = []) {
 	const textOnly = !hasMedia(workflow);
 	ensureStyle();
 	const existing = document.getElementById("block-party-export");
@@ -270,7 +270,7 @@ function openDialog(workflow, rows) {
 	if (textOnly) {
 		note.textContent = "No media input slot. Check the prompt and the seed. Drop a .txt file later, or run with --count.";
 	} else if (rows.length) {
-		note.textContent = "Check the values a run may change. The ceiling starts at the current value.";
+		note.textContent = "Check the values a run may change and review the dependency mappings.";
 	} else {
 		note.textContent = "This graph has no primitive values to expose.";
 	}
@@ -290,10 +290,47 @@ function openDialog(workflow, rows) {
 	sourceNote.textContent = "Add direct HTTPS download URLs so recipients can install missing models. Leave API keys out; recipients provide their own. Blank URLs require manual setup.";
 	sources.appendChild(sourceNote);
 	const modelFields = [];
+	const mappings = document.createElement("section");
+	const mappingFields = mappingCandidates.map((candidate, index) => {
+		const wrap = document.createElement("div");
+		wrap.className = "bp-row";
+		wrap.style.display = "block";
+		const body = document.createElement("div");
+		const label = document.createElement("label");
+		label.textContent = `${candidate.class_type} ${candidate.node_id}.${candidate.key}: ${candidate.filename}`;
+		const select = document.createElement("select");
+		select.id = `bp-model-map-${index}`;
+		const blank = document.createElement("option"); blank.value = ""; blank.textContent = "Choose the model folder"; select.appendChild(blank);
+		for (const folder of candidate.folders) {
+			const option = document.createElement("option"); option.value = folder; option.textContent = folder; select.appendChild(option);
+		}
+		label.appendChild(select);
+		const confirmed = document.createElement("input"); confirmed.type = "checkbox";
+		const confirmLabel = document.createElement("label");
+		confirmLabel.append(confirmed, document.createTextNode(" Confirm this loader reads the selected folder"));
+		body.append(label, confirmLabel);
+		if (!candidate.folders.length) {
+			const missing = document.createElement("p"); missing.textContent = "This file was not found in a model folder. Install it on the author machine before exporting."; body.appendChild(missing);
+		}
+		wrap.appendChild(body); mappings.appendChild(wrap);
+		select.addEventListener("change", () => { confirmed.checked = false; });
+		return {candidate, select, confirmed};
+	});
+	if (mappingFields.length) {
+		const heading = document.createElement("h2"); heading.textContent = "Confirm unknown model selectors";
+		const explanation = document.createElement("p"); explanation.textContent = "These fixed filenames are not in Block Party's built-in catalog. Matching folders are suggestions, not proof. Confirm where each loader reads its file. This fallback covers individual files; loaders requiring folders, tokenizers, or companion files still need a dedicated adapter. Mappings are included in the ZIP as data, never executable code.";
+		mappings.prepend(heading, explanation);
+	}
+	function readMappings() {
+		return mappingFields.map(({candidate, select, confirmed}) => {
+			if (!select.value || !confirmed.checked) throw new Error(`Confirm the model folder for ${candidate.class_type} ${candidate.node_id}.${candidate.key}.`);
+			return {node_id: candidate.node_id, class_type: candidate.class_type, key: candidate.key, filename: candidate.filename, folder: select.value};
+		});
+	}
 	const seenModels = new Set();
-	Object.values(workflow).forEach((node) => Object.entries(node.inputs || {}).forEach(([key, value]) => {
+	Object.entries(workflow).forEach(([nodeId, node]) => Object.entries(node.inputs || {}).forEach(([key, value]) => {
 		if (!isModelName(value)) return;
-		const identity = `${node.class_type}:${key}:${value}`;
+		const identity = `${nodeId}:${key}:${value}`;
 		if (seenModels.has(identity)) return;
 		seenModels.add(identity);
 		const label = document.createElement("label");
@@ -307,16 +344,18 @@ function openDialog(workflow, rows) {
 			const option = document.createElement("option"); option.value = value; option.textContent = text; auth.appendChild(option);
 		}
 		label.append(url, auth); sources.appendChild(label);
-		const field = { class_type: node.class_type, key, filename: value, url, auth, sha256: null };
+		const field = { node_id: nodeId, class_type: node.class_type, key, filename: value, url, auth, sha256: null };
 		url.addEventListener("input", () => { field.sha256 = null; field.autofilled = false; field.edited = true; });
 		modelFields.push(field);
 	}));
 	async function loadSources(discover = false) {
 		const name = nameInput.value.trim();
 		if (!JOB_NAME.test(name)) return;
+		let modelMappings;
+		try { modelMappings = readMappings(); } catch (error) { return; }
 		const response = await api.fetchApi("/block_party/sources", {
 			method: "POST", headers: { "Content-Type": "application/json", "X-Block-Party": "export" },
-			body: JSON.stringify({ name, workflow, discover }),
+			body: JSON.stringify({ name, workflow, discover, model_mappings: modelMappings }),
 		});
 		const result = await response.json();
 		if (!response.ok || !result.ok || nameInput.value.trim() !== name) return;
@@ -412,7 +451,7 @@ function openDialog(workflow, rows) {
 	submit.textContent = "Check export readiness";
 	let reviewedPayload = null;
 	actions.append(cancel, submit);
-	panel.append(title, note, nameLabel, examplesLabel, sources, list, status, actions);
+	panel.append(title, note, nameLabel, examplesLabel, mappings, sources, list, status, actions);
 	back.appendChild(panel);
 	document.body.appendChild(back);
 	nameInput.focus();
@@ -436,18 +475,29 @@ function openDialog(workflow, rows) {
 			return;
 		}
 		let parameters;
+		let modelMappings;
 		try {
 			parameters = fields.filter((item) => item.controls.box.checked).map((item) => readRow(item));
+			modelMappings = readMappings();
 		} catch (error) {
 			status.textContent = error.message;
 			return;
 		}
 		submit.disabled = true;
-		const payload = JSON.stringify({ name, workflow, parameters, include_inputs: examples.checked,
-			model_sources: modelFields.filter(item => item.url.value.trim() || item.edited).map(item => ({
+		const uniqueSources = new Map();
+		for (const item of modelFields.filter(item => item.url.value.trim() || item.edited)) {
+			const folder = modelMappings.find(mapping => mapping.node_id === item.node_id && mapping.key === item.key)?.folder;
+			const source = {
 				class_type: item.class_type, key: item.key, filename: item.filename,
+				folder,
 				url: item.url.value.trim(), auth: item.auth.value || null, sha256: item.sha256,
-			})) });
+			};
+			const identity = `${folder || MODEL_INPUTS[item.class_type]?.[item.key]}:${item.filename}`;
+			if (uniqueSources.has(identity) && uniqueSources.get(identity).url !== source.url) { status.textContent = "The same model has conflicting download URLs."; submit.disabled = false; return; }
+			uniqueSources.set(identity, source);
+		}
+		const payload = JSON.stringify({ name, workflow, parameters, include_inputs: examples.checked, model_mappings: modelMappings,
+			model_sources: Array.from(uniqueSources.values()) });
 		const preview = reviewedPayload !== payload;
 		status.textContent = preview ? "Checking export readiness. Large models are hashed before sharing." : "Creating your job folder and ZIP.";
 		try {
@@ -600,19 +650,27 @@ app.registerExtension({
 					return;
 				}
 				let rows;
+				let mappingCandidates = [];
 				try {
 					const response = await api.fetchApi("/block_party/model_inputs", {method: "POST", headers: {"X-Block-Party": "export"}});
 					if (!response.ok) throw new Error("Reload the updated Block Party extension after restarting ComfyUI.");
 					const catalog = await response.json();
 					if (!catalog.ok || !catalog.loaders) throw new Error("Model input catalog is unavailable.");
 					MODEL_INPUTS = catalog.loaders;
+					const unknown = Object.values(graph.output).some(node => Object.entries(node.inputs || {}).some(([key, value]) => isModelName(value) && !Object.prototype.hasOwnProperty.call(MODEL_INPUTS[node.class_type] || {}, key)));
+					if (unknown) {
+						const response = await api.fetchApi("/block_party/model_mapping_candidates", {method: "POST", headers: {"Content-Type": "application/json", "X-Block-Party": "export"}, body: JSON.stringify({workflow: graph.output})});
+						const report = await response.json();
+						if (!response.ok || !report.ok || !Array.isArray(report.candidates)) throw new Error(report.message || "Could not discover model mapping candidates. Restart ComfyUI after updating Block Party.");
+						mappingCandidates = report.candidates;
+					}
 					rows = candidates(graph.output);
 				} catch (error) {
 					notify("error", error.message || "Could not read the values on this graph.");
 					console.error(error);
 					return;
 				}
-				openDialog(graph.output, rows);
+				openDialog(graph.output, rows, mappingCandidates);
 			},
 		},
 	],

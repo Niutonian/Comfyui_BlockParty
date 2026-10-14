@@ -126,15 +126,17 @@ def model_input_catalog():
     return copy.deepcopy(_MODEL_LOADERS)
 
 
-def model_references(workflow: dict) -> list[dict]:
+def model_references(workflow: dict, mappings=None) -> list[dict]:
     """Each loader input whose whole value is a model file, with its folder.
 
     Prompt text is not a reference. A model filename on an unknown loader is
     refused, so a declaration cannot point at a different folder.
     """
     found: list[dict] = []
+    from one_job.model_adapters import validate_mappings
+    adapters = validate_mappings(workflow, mappings)
     seen: set[tuple[str, str]] = set()
-    for node in workflow.values():
+    for node_id, node in workflow.items():
         if not isinstance(node, dict):
             continue
         kind = node.get("class_type")
@@ -162,6 +164,8 @@ def model_references(workflow: dict) -> list[dict]:
                     raise StepError('bad_input', f'{kind} input {key} contains a structured model selection that is not supported for dependency export. Use a supported fixed-file loader so every model is declared.')
                 continue
             folder = model_input_folder(kind, key, value)
+            adapter = adapters.get((str(node_id), key))
+            if adapter is not None: folder = adapter['folder']
             if Path(value).suffix.lower() not in MODEL_EXTENSIONS:
                 if folder is not None:
                     if kind == 'ModelPreviewOverrideKJ' and key == 'tiny_vae' and value.strip().lower() in {'none', '(none)', ''}: continue

@@ -116,7 +116,7 @@ def check_contract(workflow: dict, manifest: dict, comfy_root: Path | None = Non
         node = workflow.get(str(slot["node_id"]))
         if not isinstance(node, dict) or node.get("class_type") != slot["class_type"]:
             raise StepError("bad_input", "output slot does not match the workflow")
-    referenced = model_references(workflow)
+    referenced = model_references(workflow, manifest.get('model_mappings'))
     referenced_pairs = {(item["filename"], item["folder"]) for item in referenced}
     declared: list[tuple[str, str | None]] = []
     for model in manifest["models"]:
@@ -225,7 +225,7 @@ def verify_models(comfy_root: Path, manifest: dict, workflow: dict | None = None
     """
     allowed = None
     if workflow is not None:
-        allowed = {(item["filename"], item["folder"]) for item in model_references(workflow)}
+        allowed = {(item["filename"], item["folder"]) for item in model_references(workflow, manifest.get('model_mappings'))}
     checked: dict[str, str] = {}
     for model in manifest["models"]:
         filename = model.get("filename")
