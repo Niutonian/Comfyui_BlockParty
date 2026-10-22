@@ -1,3 +1,5 @@
+import { waitForExport } from "./export_task.js";
+
 const { app } = window.comfyAPI.app;
 const { api } = window.comfyAPI.api;
 
@@ -501,11 +503,9 @@ function openDialog(workflow, rows, mappingCandidates = []) {
 		const preview = reviewedPayload !== payload;
 		status.textContent = preview ? "Checking export readiness. Large models are hashed before sharing." : "Creating your job folder and ZIP.";
 		try {
-			const response = await api.fetchApi(preview ? "/block_party/export_preview" : "/block_party/export", {
-				method: "POST",
-				headers: { "Content-Type": "application/json", "X-Block-Party": "export" },
-				body: payload,
-			});
+			const response = await waitForExport(api,
+				preview ? "/block_party/export_preview" : "/block_party/export", payload,
+				message => { status.textContent = message; });
 			let body = {};
 			try {
 				body = await response.json();

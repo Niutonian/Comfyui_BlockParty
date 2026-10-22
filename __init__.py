@@ -26,9 +26,11 @@ from one_job.job import save_preparation, sha256_file
 from one_job.paths import contained, relative_parts
 from one_job.security import export_request_allowed
 from one_job.sources import previous_sources, discover_civitai
+from one_job.export_tasks import ExportTasks
 
 _MAX_EXPORT = 32 * 1024 * 1024
 _LOCAL_PEERS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
+_export_tasks = ExportTasks()
 
 WEB_DIRECTORY = "./web"
 NODE_CLASS_MAPPINGS = {}
@@ -218,71 +220,92 @@ async def export_job(request):
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise StepError("bad_input", "request was not a job export")
-        name = clean_name(str(payload.get("name") or ""))
-        include_inputs = payload.get("include_inputs", False)
-        if type(include_inputs) is not bool:
-            raise StepError("bad_input", "include_inputs must be a boolean")
-        workflow = payload.get("workflow")
-        if not isinstance(workflow, dict):
-            raise StepError("bad_input", "workflow is missing")
-        from one_job.job import _verified_hash
-        manifest = await asyncio.to_thread(build_manifest,
-            workflow,
-            _resolve_model,
-            _resolve_pack,
-            _verified_hash,
-            name=name,
-            parameters=payload.get("parameters", []),
-            model_sources=payload.get("model_sources", []),
-            model_mappings=payload.get('model_mappings', []),
-            saved_sources=await asyncio.to_thread(previous_sources, _jobs_root(), name, workflow, payload.get('model_mappings', [])),
-        )
-        from one_job.readiness import export_readiness
-        readiness = export_readiness(manifest, include_inputs)
-        if request.path == '/block_party/export_preview':
-            return web.json_response({'ok': True, 'readiness': readiness})
-        job = await asyncio.to_thread(write_job, _jobs_root(), name, workflow, manifest)
-        archive = await asyncio.to_thread(write_share, _jobs_root(), name, workflow, manifest, include_inputs)
-        prepared = False
-        preparation_warning = None
-        link = load_link()
-        if link is not None and Path(link.comfy_root).resolve() == Path(folder_paths.base_path).resolve():
-            from one_job.job import prepare_job
-            try:
-                await asyncio.to_thread(prepare_job, job, link)
-                prepared = True
-            except (StepError, OSError) as error:
-                preparation_warning = str(error) if isinstance(error, StepError) else 'Automatic preparation failed. Run prepare on this machine.'
-        return web.json_response(
-            {
-                "ok": True,
-                "job": str(job),
-                "share_zip": str(archive),
-                "share_folder": str(archive.parent),
-                "prepared": prepared,
-                "preparation_warning": preparation_warning,
-                "name": name,
-                "hint": hint_for(manifest),
-                "inputs": manifest["inputs"],
-                "outputs": manifest["outputs"],
-                "models": [model["filename"] for model in manifest["models"]],
-                "parameters": [item["name"] for item in manifest["parameters"]],
-                "missing_sources": [f"{m['folder']}/{m['filename']}" for m in manifest['models'] if not m.get('url')],
-                "readiness": readiness,
-            }
-        )
+        payload['name'] = clean_name(str(payload.get("name") or ""))
+        if request.headers.get('X-Block-Party-Async') == '1':
+            preview = request.path == '/block_party/export_preview'
+            task = _export_tasks.start(request.headers.get('X-Block-Party-Request'), payload,
+                                       'preview' if preview else 'export',
+                                       lambda: _perform_export(payload, preview))
+            return web.json_response(task, status=202)
+        return web.json_response(await _perform_export(payload, request.path == '/block_party/export_preview'))
     except StepError as error:
-        return web.json_response(
-            {"ok": False, "code": error.code, "message": error.message},
-            status=400,
-        )
+        return web.json_response({'ok': False, 'code': error.code, 'message': error.message}, status=400)
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return web.json_response(
-            {"ok": False, "code": "bad_input", "message": "request was not JSON"},
-            status=400,
-        )
+        return web.json_response({'ok': False, 'code': 'bad_input', 'message': 'request was not JSON'}, status=400)
     except OSError:
-        return web.json_response({"ok": False, "code": "bad_input", "message": "Could not write the export. Check folder permissions and available space."}, status=400)
+        return web.json_response({'ok': False, 'code': 'bad_input', 'message': 'Could not write the export. Check folder permissions and available space.'}, status=400)
+
+
+@PromptServer.instance.routes.post('/block_party/export_status')
+async def export_status(request):
+    if not export_request_allowed(request.remote, request.headers):
+        return web.json_response({'ok': False, 'message': 'local browser only'}, status=403)
+    try:
+        raw = await request.content.read(4097)
+        if len(raw) > 4096:
+            raise StepError('bad_input', 'status request is too large')
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or not isinstance(payload.get('task_id'), str):
+            raise StepError('bad_input', 'Invalid export task')
+        return web.json_response(_export_tasks.status(payload['task_id']))
+    except (StepError, ValueError, OSError) as error:
+        return web.json_response({'ok': False, 'message': error.message if isinstance(error, StepError) else 'Invalid export task'}, status=400)
+
+
+async def _perform_export(payload, preview):
+    name = payload['name']
+    include_inputs = payload.get("include_inputs", False)
+    if type(include_inputs) is not bool:
+        raise StepError("bad_input", "include_inputs must be a boolean")
+    workflow = payload.get("workflow")
+    if not isinstance(workflow, dict):
+        raise StepError("bad_input", "workflow is missing")
+    from one_job.job import _verified_hash
+    manifest = await asyncio.to_thread(build_manifest,
+        workflow,
+        _resolve_model,
+        _resolve_pack,
+        _verified_hash,
+        name=name,
+        parameters=payload.get("parameters", []),
+        model_sources=payload.get("model_sources", []),
+        model_mappings=payload.get('model_mappings', []),
+        saved_sources=await asyncio.to_thread(previous_sources, _jobs_root(), name, workflow, payload.get('model_mappings', [])),
+    )
+    from one_job.readiness import export_readiness
+    readiness = export_readiness(manifest, include_inputs)
+    if preview:
+        return {'ok': True, 'readiness': readiness}
+    job = await asyncio.to_thread(write_job, _jobs_root(), name, workflow, manifest)
+    archive = await asyncio.to_thread(write_share, _jobs_root(), name, workflow, manifest, include_inputs)
+    prepared = False
+    preparation_warning = None
+    link = load_link()
+    if link is not None and Path(link.comfy_root).resolve() == Path(folder_paths.base_path).resolve():
+        from one_job.job import prepare_job
+        try:
+            await asyncio.to_thread(prepare_job, job, link)
+            prepared = True
+        except (StepError, OSError) as error:
+            preparation_warning = str(error) if isinstance(error, StepError) else 'Automatic preparation failed. Run prepare on this machine.'
+    return (
+        {
+            "ok": True,
+            "job": str(job),
+            "share_zip": str(archive),
+            "share_folder": str(archive.parent),
+            "prepared": prepared,
+            "preparation_warning": preparation_warning,
+            "name": name,
+            "hint": hint_for(manifest),
+            "inputs": manifest["inputs"],
+            "outputs": manifest["outputs"],
+            "models": [model["filename"] for model in manifest["models"]],
+            "parameters": [item["name"] for item in manifest["parameters"]],
+            "missing_sources": [f"{m['folder']}/{m['filename']}" for m in manifest['models'] if not m.get('url')],
+            "readiness": readiness,
+        }
+    )
 
 
 @PromptServer.instance.routes.post('/block_party/download_share')

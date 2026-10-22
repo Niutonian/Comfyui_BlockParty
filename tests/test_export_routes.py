@@ -1,4 +1,5 @@
 import importlib.util
+import asyncio
 import io
 import json
 import sys
@@ -11,6 +12,9 @@ from unittest.mock import patch
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from one_job.errors import StepError
+# Keep this module outside patch.dict(sys.modules): otherwise teardown of the
+# mock ComfyUI imports reloads it and makes function-identity checks unstable.
+from one_job.h3_compatibility import on_prompt
 
 
 class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
@@ -87,6 +91,77 @@ class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report['required_inputs'], [])
         self.assertFalse((self.root / 'jobs/demo').exists())
         self.assertFalse((self.root / 'share/demo.zip').exists())
+
+    async def test_slow_export_returns_immediately_and_retry_does_not_repeat_work(self):
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def slow_export(payload, preview):
+            calls.append((payload, preview))
+            started.set()
+            await release.wait()
+            return {'ok': True, 'readiness': {'ready': True}}
+
+        task_id = 'a' * 32
+        headers = {**self.headers, 'X-Block-Party-Async': '1', 'X-Block-Party-Request': task_id}
+        payload = {'name': 'demo', 'workflow': {'1': {'class_type': 'SaveImage', 'inputs': {}}}}
+        with patch.object(self.module, '_perform_export', side_effect=slow_export):
+            try:
+                response = await asyncio.wait_for(self.client.post('/block_party/export_preview', headers=headers, json=payload), 2)
+                self.assertEqual(response.status, 202)
+                await started.wait()
+                response = await self.client.post('/block_party/export_preview', headers=headers, json=payload)
+                self.assertEqual(response.status, 202)
+                self.assertEqual(len(calls), 1)
+                response = await self.client.post('/block_party/export_preview', headers=headers,
+                                                  json={**payload, 'include_inputs': True})
+                self.assertEqual(response.status, 400)
+                self.assertIn('different settings', (await response.json())['message'])
+                other_headers = {**headers, 'X-Block-Party-Request': 'c' * 32}
+                response = await self.client.post('/block_party/export_preview', headers=other_headers, json=payload)
+                self.assertEqual((await response.json())['code'], 'busy')
+                self.assertEqual(len(calls), 1)
+                response = await self.client.post('/block_party/export_status', headers=self.headers, json={'task_id': task_id})
+                self.assertEqual((await response.json())['state'], 'running')
+            finally:
+                release.set()
+                await self.module._export_tasks.records[task_id]['task']
+        response = await self.client.post('/block_party/export_status', headers=self.headers, json={'task_id': task_id})
+        result = await response.json()
+        self.assertEqual(result['state'], 'complete')
+        self.assertTrue(result['result']['readiness']['ready'])
+        self.assertFalse((self.root / 'jobs/demo').exists())
+
+    async def test_background_export_retains_errors_and_status_requires_local_origin(self):
+        task_id = 'b' * 32
+        headers = {**self.headers, 'X-Block-Party-Async': '1', 'X-Block-Party-Request': task_id}
+        response = await self.client.post('/block_party/export_preview', headers=headers,
+                                          json={'name': 'demo', 'workflow': None})
+        self.assertEqual(response.status, 202)
+        await self.module._export_tasks.records[task_id]['task']
+        response = await self.client.post('/block_party/export_status', json={'task_id': task_id})
+        self.assertEqual(response.status, 403)
+        response = await self.client.post('/block_party/export_status', headers=self.headers, json={'task_id': task_id})
+        result = await response.json()
+        self.assertEqual(result['result_status'], 400)
+        self.assertEqual(result['result']['code'], 'bad_input')
+
+    async def test_background_export_creates_downloadable_zip(self):
+        task_id = 'd' * 32
+        headers = {**self.headers, 'X-Block-Party-Async': '1', 'X-Block-Party-Request': task_id}
+        with patch.object(self.module, 'load_link', return_value=None):
+            response = await self.client.post('/block_party/export', headers=headers,
+                                              json={'name': 'demo', 'workflow': {'1': {'class_type': 'SaveImage', 'inputs': {}}}})
+            self.assertEqual(response.status, 202)
+            await self.module._export_tasks.records[task_id]['task']
+        response = await self.client.post('/block_party/export_status', headers=self.headers, json={'task_id': task_id})
+        task = await response.json()
+        self.assertTrue(task['result']['ok'])
+        self.assertTrue(Path(task['result']['share_zip']).is_file())
+        response = await self.client.post('/block_party/download_share', headers=self.headers, json={'name': 'demo'})
+        self.assertEqual(response.status, 200)
+        with zipfile.ZipFile(io.BytesIO(await response.read())) as archive:
+            self.assertIn('demo/manifest.json', archive.namelist())
 
     async def test_download_rejects_cross_origin_and_traversal(self):
         response = await self.client.post('/block_party/download_share', json={'name': 'demo'})
