@@ -297,6 +297,10 @@ Jobs and project packages are kept locally and ignored by Git. Export your own w
 
 In ComfyUI, **Comfyui_BlockParty → Export job** writes the folder. Restart ComfyUI after this node is added or updated, or the menu item is the previous one. Check the values a run may change.
 
+The export dialog lists supported **Load Image**, **Load Video** and **Load Audio** nodes under **Media inputs**, with their required slot names and selected files. These nodes become replaceable job inputs automatically, so their filenames are not parameter checkboxes. For example, a character-swap workflow can require both `image_0` for the character and `video_0` for the source clip. The example-input option packages files already in the job's `input/` folder; it does not automatically copy files selected in ComfyUI.
+
+**Create Bounding Boxes**, used by MOSS layout workflows, is available as an editable export field. Its box positions, descriptions, text and palettes are preserved. In the job page, draw, move or delete boxes and edit their properties, then save settings or start a run. The canvas follows exposed width/height controls and the core Resolution Selector. Re-export older jobs to add this field. Connected inputs and other unsupported custom widget formats remain fixed; exporting a workflow does not recreate every ComfyUI editor in the job page.
+
 ## MCP job control
 
 Install the optional MCP dependency with the Python interpreter that will launch the server:

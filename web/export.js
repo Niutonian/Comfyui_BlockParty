@@ -127,7 +127,9 @@ function candidates(workflow) {
 		}
 		Object.keys(node.inputs).forEach((key) => {
 			const value = node.inputs[key];
-			if (!isPrimitive(value) || Array.isArray(value)) {
+			const boxes = node.class_type === "CreateBoundingBoxes" && key === "editor_state"
+				&& Array.isArray(value) && value.every(box => box && typeof box === "object" && !Array.isArray(box));
+			if (!boxes && (!isPrimitive(value) || Array.isArray(value))) {
 				return;
 			}
 			if (MEDIA_KEY[node.class_type] === key) {
@@ -142,7 +144,7 @@ function candidates(workflow) {
 			if (isModelName(value)) {
 				return;
 			}
-			const type = valueType(key, value);
+			const type = boxes ? "bounding_boxes" : valueType(key, value);
 			const row = {
 				name: takeName(baseName(key), used),
 				nodeId: String(id),
@@ -150,7 +152,7 @@ function candidates(workflow) {
 				key,
 				type,
 				value,
-				checked: EXPOSE.has(key),
+				checked: boxes || EXPOSE.has(key),
 				seedMode: "random",
 			};
 			const bounds = boundsFor(key, type, value, node.class_type);
@@ -203,6 +205,7 @@ function ensureStyle() {
 }
 
 function preview(value) {
+	if (Array.isArray(value)) return `${value.length} bounding box(es). Editable canvas in the job page.`;
 	if (typeof value === "string") {
 		return value;
 	}
@@ -253,8 +256,52 @@ function hasMedia(workflow) {
 	});
 }
 
+function mediaSlots(workflow) {
+	const kinds = {LoadImage: "image", LoadImageMask: "image", LoadVideo: "video",
+		VHS_LoadVideo: "video", VHS_LoadVideoPath: "video", LoadAudio: "audio", VHS_LoadAudioUpload: "audio"};
+	const counts = {image: 0, video: 0, audio: 0};
+	const slots = [];
+	// Match assign_slots(): each kind is numbered separately in node-ID order.
+	for (const id of Object.keys(workflow).sort(byNodeId)) {
+		const node = workflow[id], kind = kinds[node?.class_type];
+		if (!kind) continue;
+		const key = MEDIA_KEY[node.class_type];
+		slots.push({name: `${kind}_${counts[kind]++}`, kind, nodeId: String(id),
+			classType: node.class_type, key, title: node._meta?.title || node.class_type,
+			filename: typeof node.inputs?.[key] === "string" ? node.inputs[key] : ""});
+	}
+	return slots.sort((a, b) => ["image", "video", "audio"].indexOf(a.kind) - ["image", "video", "audio"].indexOf(b.kind));
+}
+
+function mediaSection(slots) {
+	const section = document.createElement("section");
+	section.className = "bp-media-inputs";
+	const heading = document.createElement("h2"); heading.textContent = "Media inputs";
+	const explanation = document.createElement("p");
+	explanation.textContent = slots.length
+		? "These Load nodes are included automatically as required input slots. Recipients can upload or drop replacement files in the job page. No parameter checkbox is needed."
+		: "No supported image, video or audio Load nodes in this graph.";
+	section.append(heading, explanation);
+	const labels = {LoadImage: "Load Image", LoadImageMask: "Load Image Mask", LoadVideo: "Load Video",
+		VHS_LoadVideo: "Load Video", VHS_LoadVideoPath: "Load Video Path", LoadAudio: "Load Audio", VHS_LoadAudioUpload: "Load Audio"};
+	for (const slot of slots) {
+		const card = document.createElement("div"); card.className = "bp-row";
+		card.style.display = "block";
+		const title = document.createElement("div"); title.className = "bp-title";
+		title.textContent = `${labels[slot.classType]} → ${slot.name} (required)`;
+		const meta = document.createElement("div"); meta.className = "bp-meta";
+		meta.textContent = `${slot.classType} ${slot.nodeId}.${slot.key} · ${slot.title}`;
+		const file = document.createElement("div"); file.className = "bp-value";
+		file.textContent = slot.filename ? `Selected in ComfyUI: ${slot.filename}` : "File supplied through this input slot when the job runs.";
+		file.title = slot.filename;
+		card.append(title, meta, file); section.append(card);
+	}
+	return section;
+}
+
 function openDialog(workflow, rows, mappingCandidates = []) {
 	const textOnly = !hasMedia(workflow);
+	const media = mediaSection(mediaSlots(workflow));
 	ensureStyle();
 	const existing = document.getElementById("block-party-export");
 	if (existing) {
@@ -272,9 +319,9 @@ function openDialog(workflow, rows, mappingCandidates = []) {
 	if (textOnly) {
 		note.textContent = "No media input slot. Check the prompt and the seed. Drop a .txt file later, or run with --count.";
 	} else if (rows.length) {
-		note.textContent = "Check the values a run may change and review the dependency mappings.";
+		note.textContent = "Review the automatically included media inputs, then choose editable settings and check the dependency mappings.";
 	} else {
-		note.textContent = "This graph has no primitive values to expose.";
+		note.textContent = "The media inputs below are included automatically. This graph has no additional simple values to expose.";
 	}
 	const nameLabel = document.createElement("label");
 	nameLabel.textContent = "Job name";
@@ -388,7 +435,7 @@ function openDialog(workflow, rows, mappingCandidates = []) {
 	const examplesLabel = document.createElement("label");
 	const examples = document.createElement("input");
 	examples.type = "checkbox";
-	examplesLabel.append(examples, document.createTextNode(" Include example inputs from this job's input folder (images, videos and prompts)"));
+	examplesLabel.append(examples, document.createTextNode(" Include example inputs from this job's input folder (images, videos, audio and prompts). This does not copy the files selected in ComfyUI automatically."));
 	list.className = "bp-list";
 	const fields = rows.map((row) => {
 		const wrap = document.createElement("div");
@@ -399,7 +446,7 @@ function openDialog(workflow, rows, mappingCandidates = []) {
 		const body = document.createElement("div");
 		const heading = document.createElement("div");
 		heading.className = "bp-title";
-		heading.textContent = row.name;
+		heading.textContent = row.type === "bounding_boxes" ? "Create Bounding Boxes" : row.name;
 		const meta = document.createElement("div");
 		meta.className = "bp-meta";
 		meta.textContent = `${row.classType} ${row.nodeId}.${row.key}`;
@@ -453,7 +500,7 @@ function openDialog(workflow, rows, mappingCandidates = []) {
 	submit.textContent = "Check export readiness";
 	let reviewedPayload = null;
 	actions.append(cancel, submit);
-	panel.append(title, note, nameLabel, examplesLabel, mappings, sources, list, status, actions);
+	panel.append(title, note, nameLabel, media, examplesLabel, mappings, sources, list, status, actions);
 	back.appendChild(panel);
 	document.body.appendChild(back);
 	nameInput.focus();

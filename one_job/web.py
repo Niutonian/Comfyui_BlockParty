@@ -124,6 +124,8 @@ def _raw_value(spec: dict, fields: dict):
 
 
 def _cli_text(value) -> str:
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
@@ -522,7 +524,7 @@ class App:
         for spec in specs:
             if prompt_spec and spec["name"] == prompt_spec["name"]:
                 continue
-            parts.append(_field(spec, overrides))
+            parts.append(_field(spec, overrides, manifest))
         if prompt_files:
             parts.append("<h2>Prompt files</h2><p>Save edits these input files. Each matching run uses its file's prompt.</p>")
             for path, text in prompt_files:
@@ -632,14 +634,17 @@ class App:
         handler.wfile.write(body)
 
 
-def _field(spec: dict, overrides: dict) -> str:
+def _field(spec: dict, overrides: dict, manifest=None) -> str:
     name = spec["name"]
     kind = spec.get("type")
     raw = overrides[name] if name in overrides else spec.get("default")
     stored = parse_stored(spec, raw)
     mark = "set" if name in overrides else "default"
     html = [f"<label for=\"v_{_esc(name)}\">{_esc(name)} <span class=\"mark\">{mark}</span></label>"]
-    if kind == "string":
+    if kind == 'bounding_boxes':
+        from one_job.bounding_boxes import editor_html
+        html.append(editor_html(spec, stored, manifest))
+    elif kind == "string":
         html.append(f"<textarea id=\"v_{_esc(name)}\" name=\"v_{_esc(name)}\">{_esc(stored)}</textarea>")
     elif kind == "boolean":
         checked = " checked" if stored else ""

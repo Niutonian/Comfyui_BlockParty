@@ -155,6 +155,11 @@ def model_references(workflow: dict, mappings=None) -> list[dict]:
                 raise StepError('bad_input', 'H3ClipLoaderAny uses a GGUF vision sidecar. Select its explicit mmproj_name instead of (auto) before exporting, so the shared job includes and verifies that file.')
         loaders = _MODEL_LOADERS.get(kind, {})
         for key, value in inputs.items():
+            if kind == 'CreateBoundingBoxes' and key in {'editor_state', 'last_incoming'}:
+                from one_job.bounding_boxes import is_box_input, parse_boxes
+                if is_box_input(kind, 'editor_state', value):
+                    parse_boxes(value)
+                    continue  # Canvas captions are text, not model filenames.
             if kind == 'H3ClipLoaderAny' and key == 'mmproj_name' and not str(inputs.get('clip_name', '')).lower().endswith('.gguf'):
                 continue  # The safetensors branch does not read a vision sidecar.
             if key in loaders and isinstance(value, (list, dict)):

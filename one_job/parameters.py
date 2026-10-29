@@ -14,6 +14,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from one_job.errors import StepError
+from one_job.bounding_boxes import canvas_settings, is_box_input, parse_boxes
 from one_job.paths import assert_unlinked
 from one_job.slots import (
     IMAGE_LOADERS,
@@ -27,7 +28,7 @@ from one_job.slots import (
 )
 
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
-_TYPES = {"string", "integer", "number", "boolean", "seed"}
+_TYPES = {"string", "integer", "number", "boolean", "seed", "bounding_boxes"}
 _SEED_KEYS = {"seed", "noise_seed"}
 _SAVERS = set(IMAGE_SAVERS) | set(VIDEO_SAVERS)
 _MEDIA = {**IMAGE_LOADERS, **VIDEO_LOADERS, **AUDIO_LOADERS}
@@ -75,7 +76,7 @@ def parameter_candidates(workflow: dict) -> list[dict]:
         for key, value in inputs.items():
             if _blocked(kind, key, value):
                 continue
-            value_kind = _value_type(key, value)
+            value_kind = _value_type(key, value, kind)
             row = {
                 "name": _take_name(_base_name(key), used),
                 "node_id": str(node_id),
@@ -183,6 +184,8 @@ def parse_stored(spec: dict, raw):
     """
     name = str(spec.get("name") or "parameter")
     kind = spec.get("type")
+    if kind == 'bounding_boxes':
+        return parse_boxes(raw)
     if kind == "string":
         if not isinstance(raw, str):
             raise StepError("bad_input", f"{name} must be text")
@@ -322,6 +325,8 @@ def _accept_one(workflow: dict, item: dict) -> dict:
     elif default != baked:
         raise StepError("bad_input", f"{name} default does not match the graph")
     spec["default"] = default
+    if kind == 'bounding_boxes':
+        spec.update(canvas_settings(workflow, str(node_id)))
     return spec
 
 
@@ -336,12 +341,14 @@ def _target_problem(workflow: dict, spec: dict) -> str | None:
         return f"{name} does not match the workflow"
     if _blocked(str(spec.get("class_type")), key, inputs[key]):
         return f"{name} is not a value this job can edit"
-    if spec.get("type") != _value_type(key, inputs[key]):
+    if spec.get("type") != _value_type(key, inputs[key], str(spec.get('class_type'))):
         return f"{name} does not match the workflow"
     return None
 
 
 def _blocked(class_type: str, key: str, value) -> bool:
+    if is_box_input(class_type, key, value):
+        return False
     if model_input_folder(class_type, key, value) is not None:
         return True  # Includes optional model selectors currently set to None.
     if value is None or isinstance(value, (list, dict)):
@@ -357,7 +364,9 @@ def _blocked(class_type: str, key: str, value) -> bool:
     return False
 
 
-def _value_type(key: str, value) -> str:
+def _value_type(key: str, value, class_type=None) -> str:
+    if is_box_input(class_type, key, value):
+        return 'bounding_boxes'
     if isinstance(value, bool):
         return "boolean"
     if isinstance(value, str):
